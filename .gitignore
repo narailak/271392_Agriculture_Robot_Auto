@@ -1,5 +1,5 @@
 # Data folder
-Record_data/
+Record_data/captured_*/
 
 # ROS build
 build/
