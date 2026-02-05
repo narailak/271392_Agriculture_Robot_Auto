@@ -1,0 +1,8 @@
+# Data folder
+Record_data/
+
+# ROS build
+build/
+install/
+log/
+venv/
