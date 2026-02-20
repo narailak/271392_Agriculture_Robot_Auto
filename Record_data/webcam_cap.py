@@ -3,7 +3,7 @@ import os
 import time
 
 # ===================== CONFIG =====================
-CAMERA_ID = 0
+CAMERA_ID = 4
 WIDTH = 1920
 HEIGHT = 1080
 FPS = 50
