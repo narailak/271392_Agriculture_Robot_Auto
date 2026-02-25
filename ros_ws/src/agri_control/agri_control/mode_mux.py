@@ -35,13 +35,13 @@ class ModeMux(Node):
 
 
         # ---- publishers (final command) ----
-        self.pub_motor = self.create_publisher(Int16, '/cmd_moter_dril', 10)
-        self.pub_gripper = self.create_publisher(Int16, '/cmd_gripper', 10)
-        self.pub_linear = self.create_publisher(Int16, '/cmd_linear', 10)
-        self.pub_servo = self.create_publisher(Int16, '/cmd_servo_dril', 10)
-        self.pub_sw = self.create_publisher(Int16, '/cmd_servo_switch180', 10)
-        self.pub_step = self.create_publisher(Int16, '/cmd_step_load', 10)
-        self.pub_vel = self.create_publisher(Twist, '/cmd_vel', 10)
+        self.pub_motor = self.create_publisher(Int16, '/tao/cmd_moter_dril', 10)
+        self.pub_gripper = self.create_publisher(Int16, '/tao/cmd_gripper', 10)
+        self.pub_linear = self.create_publisher(Int16, '/tao/cmd_linear', 10)
+        self.pub_servo = self.create_publisher(Int16, '/tao/cmd_servo_dril', 10)
+        self.pub_sw = self.create_publisher(Int16, '/tao/cmd_servo_switch180', 10)
+        self.pub_step = self.create_publisher(Int16, '/tao/cmd_step_load', 10)
+        self.pub_vel = self.create_publisher(Twist, '/tao/cmd_vel', 10)
 
 
     # ---------- mode ----------

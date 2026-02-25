@@ -1,11 +1,12 @@
-// ================= ESP32 + micro-ROS: 3x Servo + Stepper + TB6612 =================
 #include <Arduino.h>
 #include <ESP32Servo.h>
 #include <micro_ros_platformio.h>
 
+#include "esp32_config.h"
+
 #include <rcl/rcl.h>
-#include <rcl/error_handling.h>
 #include <rclc/rclc.h>
+#include <rcl/error_handling.h>
 #include <rclc/executor.h>
 
 #include <std_msgs/msg/int16.h>
@@ -13,185 +14,291 @@
 #include "soc/gpio_reg.h"
 #include "driver/gpio.h"
 
-#define RCCHECK(fn) do { rcl_ret_t rc=(fn); if(rc!=RCL_RET_OK){ while(1){ delay(100); } } } while(0)
+// ================= MACRO =================
+#define RCCHECK(fn) {rcl_ret_t rc=fn; if(rc!=RCL_RET_OK){while(1){delay(100);}}}
 #define RCSOFTCHECK(fn) (void)(fn)
 
-enum ConnState { WAITING_AGENT, AGENT_AVAILABLE, AGENT_CONNECTED, AGENT_DISCONNECTED };
-static ConnState state = WAITING_AGENT;
+#define EXECUTE_EVERY_MS(MS,X) \
+do{static uint32_t t=0;if(millis()-t>MS){X;t=millis();}}while(0)
 
-rclc_executor_t executor;
-rclc_support_t support;
-rcl_allocator_t allocator;
-rcl_node_t node;
-rcl_init_options_t init_options;
-
-// ================= SERVO =================
-struct ServoChan {
-  Servo servo;
-  int pin;
-  int min_us;
-  int max_us;
-  int max_deg;
-  const char* sub_topic;
-  const char* pub_topic;
-  rcl_subscription_t sub;
-  std_msgs__msg__Int16 sub_msg;
-  rcl_publisher_t pub;
-  std_msgs__msg__Int16 pub_msg;
-  int16_t last_angle = -1;
+// ================= CONNECTION =================
+enum ConnState{
+  WAITING_AGENT,
+  AGENT_AVAILABLE,
+  AGENT_CONNECTED,
+  AGENT_DISCONNECTED
 };
 
-static ServoChan make_gripper(){
-  ServoChan ch{};
-  ch.pin=16; ch.min_us=500; ch.max_us=2500; ch.max_deg=180;
-  ch.sub_topic="/cmd_gripper";
-  ch.pub_topic="/cmd_gripper/fb";
-  return ch;
+ConnState state = WAITING_AGENT;
+
+// ================= ROS =================
+rcl_node_t node;
+rclc_support_t support;
+rcl_allocator_t allocator;
+rclc_executor_t executor;
+rcl_init_options_t init_options;
+
+// =================================================
+// LIMIT PUB
+// =================================================
+rcl_publisher_t pub_limit_left;
+rcl_publisher_t pub_limit_right;
+
+std_msgs__msg__Int16 msg_limit_left;
+std_msgs__msg__Int16 msg_limit_right;
+
+inline int limit_left(){
+  return digitalRead(PIN_LIMIT_LEFT)==LOW;
 }
 
-static ServoChan make_dril_servo(){
-  ServoChan ch{};
-  ch.pin=23; ch.min_us=500; ch.max_us=2500; ch.max_deg=180;
-  ch.sub_topic="/cmd_servo_dril";
-  ch.pub_topic="/cmd_servo_dril/fb";
-  return ch;
+inline int limit_right(){
+  return digitalRead(PIN_LIMIT_RIGHT)==LOW;
 }
 
-static ServoChan make_sw180(){
-  ServoChan ch{};
-  ch.pin=17; ch.min_us=500; ch.max_us=2500; ch.max_deg=270;
-  ch.sub_topic="/cmd_servo_switch180";
-  ch.pub_topic="/cmd_servo_switch180/fb";
-  return ch;
+// =================================================
+// SERVO
+// =================================================
+Servo servo_gripper;
+Servo servo_dril;
+Servo servo_sw;
+
+rcl_subscription_t sub_gripper;
+rcl_subscription_t sub_servo_dril;
+rcl_subscription_t sub_servo_sw;
+
+std_msgs__msg__Int16 msg_gripper;
+std_msgs__msg__Int16 msg_servo_dril;
+std_msgs__msg__Int16 msg_servo_sw;
+
+void cb_gripper(const void * msg){
+  servo_gripper.write(((std_msgs__msg__Int16*)msg)->data);
 }
 
-static ServoChan CH_GRIPPER = make_gripper();
-static ServoChan CH_DRIL_SERVO = make_dril_servo();
-static ServoChan CH_SW180 = make_sw180();
-
-int clamp_angle(const ServoChan& ch, int angle){
-  if(angle < 0) angle = 0;
-  if(angle > ch.max_deg) angle = ch.max_deg;
-  return angle;
+void cb_servo_dril(const void * msg){
+  servo_dril.write(((std_msgs__msg__Int16*)msg)->data);
 }
 
-int angle_to_us(const ServoChan& ch, int angle){
-  long span = ch.max_us - ch.min_us;
-  long us = ch.min_us + (long)angle * span / ch.max_deg;
-  return (int)us;
+void cb_servo_sw(const void * msg){
+  servo_sw.write(((std_msgs__msg__Int16*)msg)->data);
 }
 
-void move_servo(ServoChan& ch, int angle){
-  ch.servo.writeMicroseconds(angle_to_us(ch, angle));
-}
+// =================================================
+// STEPPER
+// =================================================
+volatile int RUN_DIR=0;
+volatile bool pul=false;
+hw_timer_t* timer0=NULL;
 
-void servo_cb_generic(ServoChan& ch, const void* msgin){
-  const auto* m = (const std_msgs__msg__Int16*)msgin;
-  int a = clamp_angle(ch, m->data);
-  move_servo(ch, a);
-  ch.last_angle = a;
-  ch.pub_msg.data = a;
-  rcl_publish(&ch.pub, &ch.pub_msg, NULL);
-}
+void IRAM_ATTR onTimer(){
 
-void sub_cb_gripper(const void* msgin){ servo_cb_generic(CH_GRIPPER, msgin); }
-void sub_cb_dril(const void* msgin){ servo_cb_generic(CH_DRIL_SERVO, msgin); }
-void sub_cb_sw180(const void* msgin){ servo_cb_generic(CH_SW180, msgin); }
+  if(RUN_DIR==0) return;
 
-// ================= STEPPER =================
-static const int PIN_PUL=25;
-static const int PIN_DIR=26;
-static const int PIN_ENA=27;
+  uint32_t mask=(1U<<PIN_STEPPER_PUL);
 
-rcl_subscription_t sub_cmd_linear;
-std_msgs__msg__Int16 cmd_msg_linear;
-
-void cmd_cb_linear(const void* msgin){
-  const auto* m=(const std_msgs__msg__Int16*)msgin;
-  Serial.print("Linear cmd: ");
-  Serial.println(m->data);
-}
-
-// ================= TB6612 =================
-#define TB_AIN1 19
-#define TB_AIN2 21
-#define TB_PWMA 22
-#define TB_STBY 5
-
-#define PWM_CHANNEL 0
-#define PWM_FREQ 20000
-#define PWM_RES 8
-
-rcl_subscription_t sub_cmd_step_load;
-std_msgs__msg__Int16 cmd_msg_step_load;
-
-void cmd_cb_step_load(const void* msgin){
-  const auto* m=(const std_msgs__msg__Int16*)msgin;
-  int val=m->data;
-  if(val<=0){
-    ledcWrite(PWM_CHANNEL,0);
-    digitalWrite(TB_AIN1,LOW);
-    digitalWrite(TB_AIN2,LOW);
+  if(!pul){
+    REG_WRITE(GPIO_OUT_W1TS_REG,mask);
+    pul=true;
   }else{
-    if(val>100) val=100;
-    int duty=map(val,0,100,0,255);
-    digitalWrite(TB_AIN1,HIGH);
-    digitalWrite(TB_AIN2,LOW);
-    ledcWrite(PWM_CHANNEL,duty);
+    REG_WRITE(GPIO_OUT_W1TC_REG,mask);
+    pul=false;
   }
 }
 
-// ================= CREATE ENTITIES =================
+rcl_subscription_t sub_linear;
+rcl_publisher_t pub_linear;
+
+std_msgs__msg__Int16 msg_linear;
+std_msgs__msg__Int16 fb_linear;
+
+void cb_linear(const void * msg){
+
+  int cmd=((std_msgs__msg__Int16*)msg)->data;
+
+  digitalWrite(PIN_STEPPER_DIR,(cmd>0));
+  RUN_DIR=cmd;
+
+  fb_linear.data=cmd;
+  RCSOFTCHECK(rcl_publish(&pub_linear,&fb_linear,NULL));
+}
+
+// =================================================
+// TB6612 MOTOR
+// =================================================
+rcl_subscription_t sub_motor;
+rcl_publisher_t pub_motor;
+
+std_msgs__msg__Int16 msg_motor;
+std_msgs__msg__Int16 fb_motor;
+
+void motor_stop(){
+  ledcWrite(TB_PWM_CHANNEL,0);
+  digitalWrite(PIN_TB_AIN1,LOW);
+  digitalWrite(PIN_TB_AIN2,LOW);
+}
+
+void motor_forward(uint8_t pwm){
+  digitalWrite(PIN_TB_AIN1,HIGH);
+  digitalWrite(PIN_TB_AIN2,LOW);
+  ledcWrite(TB_PWM_CHANNEL,pwm);
+}
+
+void cb_motor(const void * msg){
+
+  int v=((std_msgs__msg__Int16*)msg)->data;
+
+  if(v<=0){motor_stop();return;}
+
+  if(v>100)v=100;
+
+  uint8_t pwm=map(v,1,100,0,255);
+  motor_forward(pwm);
+
+  fb_motor.data=v;
+  RCSOFTCHECK(rcl_publish(&pub_motor,&fb_motor,NULL));
+}
+
+// =================================================
+// CREATE ENTITIES
+// =================================================
 bool createEntities(){
-  allocator = rcl_get_default_allocator();
-  RCCHECK(rclc_support_init(&support,0,NULL,&allocator));
-  RCCHECK(rclc_node_init_default(&node,"esp32_node","",&support));
 
-  // Servo pubs/subs
-  RCCHECK(rclc_publisher_init_default(&CH_GRIPPER.pub,&node,ROSIDL_GET_MSG_TYPE_SUPPORT(std_msgs,msg,Int16),CH_GRIPPER.pub_topic));
-  RCCHECK(rclc_subscription_init_default(&CH_GRIPPER.sub,&node,ROSIDL_GET_MSG_TYPE_SUPPORT(std_msgs,msg,Int16),CH_GRIPPER.sub_topic));
+  allocator=rcl_get_default_allocator();
 
-  RCCHECK(rclc_publisher_init_default(&CH_DRIL_SERVO.pub,&node,ROSIDL_GET_MSG_TYPE_SUPPORT(std_msgs,msg,Int16),CH_DRIL_SERVO.pub_topic));
-  RCCHECK(rclc_subscription_init_default(&CH_DRIL_SERVO.sub,&node,ROSIDL_GET_MSG_TYPE_SUPPORT(std_msgs,msg,Int16),CH_DRIL_SERVO.sub_topic));
+  RCCHECK(rcl_init_options_init(&init_options,allocator));
+  RCCHECK(rcl_init_options_set_domain_id(&init_options,ROS_DOMAIN_ID));
 
-  RCCHECK(rclc_publisher_init_default(&CH_SW180.pub,&node,ROSIDL_GET_MSG_TYPE_SUPPORT(std_msgs,msg,Int16),CH_SW180.pub_topic));
-  RCCHECK(rclc_subscription_init_default(&CH_SW180.sub,&node,ROSIDL_GET_MSG_TYPE_SUPPORT(std_msgs,msg,Int16),CH_SW180.sub_topic));
+  RCCHECK(rclc_support_init_with_options(
+      &support,0,NULL,&init_options,&allocator));
 
-  RCCHECK(rclc_subscription_init_default(&sub_cmd_linear,&node,ROSIDL_GET_MSG_TYPE_SUPPORT(std_msgs,msg,Int16),"/cmd_linear"));
-  RCCHECK(rclc_subscription_init_default(&sub_cmd_step_load,&node,ROSIDL_GET_MSG_TYPE_SUPPORT(std_msgs,msg,Int16),"/cmd_step_load"));
+  RCCHECK(rclc_node_init_default(
+      &node,"esp32_actuator","",&support));
+
+  // LIMIT PUB
+  RCCHECK(rclc_publisher_init_best_effort(
+      &pub_limit_left,&node,
+      ROSIDL_GET_MSG_TYPE_SUPPORT(std_msgs,msg,Int16),
+      "/tao/limit_left"));
+
+  RCCHECK(rclc_publisher_init_best_effort(
+      &pub_limit_right,&node,
+      ROSIDL_GET_MSG_TYPE_SUPPORT(std_msgs,msg,Int16),
+      "/tao/limit_right"));
+
+  // SERVO SUB
+  RCCHECK(rclc_subscription_init_default(
+      &sub_gripper,&node,
+      ROSIDL_GET_MSG_TYPE_SUPPORT(std_msgs,msg,Int16),
+      "/tao/cmd_gripper"));
+
+  RCCHECK(rclc_subscription_init_default(
+      &sub_servo_dril,&node,
+      ROSIDL_GET_MSG_TYPE_SUPPORT(std_msgs,msg,Int16),
+      "/tao/cmd_servo_dril"));
+
+  RCCHECK(rclc_subscription_init_default(
+      &sub_servo_sw,&node,
+      ROSIDL_GET_MSG_TYPE_SUPPORT(std_msgs,msg,Int16),
+      "/tao/cmd_servo_switch180"));
+
+  // LINEAR
+  RCCHECK(rclc_subscription_init_default(
+      &sub_linear,&node,
+      ROSIDL_GET_MSG_TYPE_SUPPORT(std_msgs,msg,Int16),
+      "/tao/cmd_linear"));
+
+  RCCHECK(rclc_publisher_init_best_effort(
+      &pub_linear,&node,
+      ROSIDL_GET_MSG_TYPE_SUPPORT(std_msgs,msg,Int16),
+      "/tao/cmd_linear/fb"));
+
+  // MOTOR
+  RCCHECK(rclc_subscription_init_default(
+      &sub_motor,&node,
+      ROSIDL_GET_MSG_TYPE_SUPPORT(std_msgs,msg,Int16),
+      "/tao/moter_dril"));
+
+  RCCHECK(rclc_publisher_init_best_effort(
+      &pub_motor,&node,
+      ROSIDL_GET_MSG_TYPE_SUPPORT(std_msgs,msg,Int16),
+      "/tao/moter_dril/rpm"));
 
   RCCHECK(rclc_executor_init(&executor,&support.context,5,&allocator));
 
-  RCCHECK(rclc_executor_add_subscription(&executor,&CH_GRIPPER.sub,&CH_GRIPPER.sub_msg,&sub_cb_gripper,ON_NEW_DATA));
-  RCCHECK(rclc_executor_add_subscription(&executor,&CH_DRIL_SERVO.sub,&CH_DRIL_SERVO.sub_msg,&sub_cb_dril,ON_NEW_DATA));
-  RCCHECK(rclc_executor_add_subscription(&executor,&CH_SW180.sub,&CH_SW180.sub_msg,&sub_cb_sw180,ON_NEW_DATA));
-  RCCHECK(rclc_executor_add_subscription(&executor,&sub_cmd_linear,&cmd_msg_linear,&cmd_cb_linear,ON_NEW_DATA));
-  RCCHECK(rclc_executor_add_subscription(&executor,&sub_cmd_step_load,&cmd_msg_step_load,&cmd_cb_step_load,ON_NEW_DATA));
+  RCCHECK(rclc_executor_add_subscription(&executor,&sub_gripper,&msg_gripper,cb_gripper,ON_NEW_DATA));
+  RCCHECK(rclc_executor_add_subscription(&executor,&sub_servo_dril,&msg_servo_dril,cb_servo_dril,ON_NEW_DATA));
+  RCCHECK(rclc_executor_add_subscription(&executor,&sub_servo_sw,&msg_servo_sw,cb_servo_sw,ON_NEW_DATA));
+  RCCHECK(rclc_executor_add_subscription(&executor,&sub_linear,&msg_linear,cb_linear,ON_NEW_DATA));
+  RCCHECK(rclc_executor_add_subscription(&executor,&sub_motor,&msg_motor,cb_motor,ON_NEW_DATA));
 
   return true;
 }
 
-// ================= SETUP =================
+// =================================================
+// SETUP
+// =================================================
 void setup(){
+
   Serial.begin(115200);
   set_microros_serial_transports(Serial);
 
-  CH_GRIPPER.servo.attach(CH_GRIPPER.pin,CH_GRIPPER.min_us,CH_GRIPPER.max_us);
-  CH_DRIL_SERVO.servo.attach(CH_DRIL_SERVO.pin,CH_DRIL_SERVO.min_us,CH_DRIL_SERVO.max_us);
-  CH_SW180.servo.attach(CH_SW180.pin,CH_SW180.min_us,CH_SW180.max_us);
+  pinMode(PIN_STEPPER_PUL,OUTPUT);
+  pinMode(PIN_STEPPER_DIR,OUTPUT);
+  pinMode(PIN_STEPPER_ENA,OUTPUT);
 
-  pinMode(TB_AIN1,OUTPUT);
-  pinMode(TB_AIN2,OUTPUT);
-  pinMode(TB_STBY,OUTPUT);
-  digitalWrite(TB_STBY,HIGH);
+  pinMode(PIN_LIMIT_LEFT,INPUT_PULLUP);
+  pinMode(PIN_LIMIT_RIGHT,INPUT_PULLUP);
 
-  ledcSetup(PWM_CHANNEL,PWM_FREQ,PWM_RES);
-  ledcAttachPin(TB_PWMA,PWM_CHANNEL);
+  pinMode(PIN_TB_AIN1,OUTPUT);
+  pinMode(PIN_TB_AIN2,OUTPUT);
+  pinMode(PIN_TB_STBY,OUTPUT);
 
-  createEntities();
+  digitalWrite(PIN_TB_STBY,HIGH);
+
+  ledcSetup(TB_PWM_CHANNEL,TB_PWM_FREQ,TB_PWM_RES);
+  ledcAttachPin(PIN_TB_PWM,TB_PWM_CHANNEL);
+
+  timer0=timerBegin(0,80,true);
+  timerAttachInterrupt(timer0,&onTimer,true);
+  timerAlarmWrite(timer0,20,true);
+  timerAlarmEnable(timer0);
+
+  servo_gripper.attach(PIN_SERVO_GRIPPER);
+  servo_dril.attach(PIN_SERVO_DRIL);
+  servo_sw.attach(PIN_SERVO_SWITCH180);
 }
 
-// ================= LOOP =================
+// =================================================
+// LOOP
+// =================================================
 void loop(){
-  rclc_executor_spin_some(&executor,RCL_MS_TO_NS(100));
+
+  switch(state){
+
+    case WAITING_AGENT:
+      if(rmw_uros_ping_agent(100,1)==RMW_RET_OK)
+        state=AGENT_AVAILABLE;
+      break;
+
+    case AGENT_AVAILABLE:
+      state=createEntities()?AGENT_CONNECTED:WAITING_AGENT;
+      break;
+
+    case AGENT_CONNECTED:
+
+      rclc_executor_spin_some(&executor,RCL_MS_TO_NS(50));
+
+      EXECUTE_EVERY_MS(100,{
+        msg_limit_left.data=limit_left();
+        msg_limit_right.data=limit_right();
+
+        RCSOFTCHECK(rcl_publish(&pub_limit_left,&msg_limit_left,NULL));
+        RCSOFTCHECK(rcl_publish(&pub_limit_right,&msg_limit_right,NULL));
+      });
+
+      break;
+
+    case AGENT_DISCONNECTED:
+      state=WAITING_AGENT;
+      break;
+  }
 }

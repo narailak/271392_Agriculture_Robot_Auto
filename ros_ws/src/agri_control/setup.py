@@ -1,6 +1,6 @@
 from setuptools import find_packages, setup
 
-package_name = 'cabbage_detection'
+package_name = 'agri_control'
 
 setup(
     name=package_name,
@@ -24,8 +24,9 @@ setup(
     },
     entry_points={
         'console_scripts': [
-        'camera_publisher = cabbage_detection.camera_publisher_node:main',
-        'apriltag_node = cabbage_detection.apriltag_node:main',
+            'joy_mapper = agri_control.joy_mapper:main',
+            'mode_mux = agri_control.mode_mux:main',
+            'teleop_keyboard = agri_control.teleop_keyboard:main',
         ],
     },
 )

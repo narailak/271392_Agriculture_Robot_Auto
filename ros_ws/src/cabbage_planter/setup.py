@@ -24,8 +24,6 @@ setup(
     },
     entry_points={
         'console_scripts': [
-            'joy_mapper = cabbage_planter.joy_mapper:main',
-            'mode_mux = cabbage_planter.mode_mux:main',
         ],
     },
 )
