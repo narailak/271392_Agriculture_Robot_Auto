@@ -26,6 +26,7 @@ setup(
         'console_scripts': [
         'camera_publisher = cabbage_detection.camera_publisher_node:main',
         'apriltag_node = cabbage_detection.apriltag_node:main',
+        'garden_yolo_node = cabbage_detection.garden_yolo:main',
         ],
     },
 )

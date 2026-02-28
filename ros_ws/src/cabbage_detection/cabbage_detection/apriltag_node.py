@@ -23,7 +23,7 @@ class AprilTagNode(Node):
 
         # apriltag detector
         self.detector = Detector(
-            families="tag52h13",
+            families="tagStandard52h13",
             nthreads=4,
             quad_decimate=1.5,
             quad_sigma=0.0,

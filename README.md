@@ -25,3 +25,8 @@ ros2 run micro_ros_agent micro_ros_agent serial --dev /dev/ttyACM0 -b 115200
 
 # เช็ค index cam
 v4l2-ctl --list-devices
+
+# internet setting 
+nmcli device status
+
+

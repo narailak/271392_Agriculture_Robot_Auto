@@ -44,7 +44,7 @@ class TaoKeyboardJoy(Node):
 
         # ===== Publishers =====
         self.pub_vel = self.create_publisher(Twist, '/tao/cmd_vel', 10)
-        self.pub_motor = self.create_publisher(Int16, '/tao/cmd_moter_dril', 10)
+        self.pub_motor = self.create_publisher(Int16, '/tao/cmd_motor_dril', 10)
         self.pub_gripper = self.create_publisher(Int16, '/tao/cmd_gripper', 10)
         self.pub_linear = self.create_publisher(Int16, '/tao/cmd_linear', 10)
         self.pub_servo_dril = self.create_publisher(Int16, '/tao/cmd_servo_dril', 10)

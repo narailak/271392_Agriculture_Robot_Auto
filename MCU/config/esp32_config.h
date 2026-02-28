@@ -91,6 +91,12 @@ static const uint32_t CMD_TIMEOUT_MS = 300;
 #define PIN_TB_AIN2              21
 #define PIN_TB_PWMA              22
 #define PIN_TB_STBY              5
+
+// PWM CONFIG
+#define TB_PWM_CHANNEL  0
+#define TB_PWM_FREQ     20000
+#define TB_PWM_RES      8
+
 #endif
 #endif
 

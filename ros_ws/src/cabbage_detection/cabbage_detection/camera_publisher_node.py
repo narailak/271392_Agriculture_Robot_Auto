@@ -24,7 +24,7 @@ class CameraPublisher(Node):
         )
 
         # open camera
-        self.cap = cv2.VideoCapture(5, cv2.CAP_V4L2)
+        self.cap = cv2.VideoCapture(4, cv2.CAP_V4L2)
 
         self.cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
         self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, self.width)
