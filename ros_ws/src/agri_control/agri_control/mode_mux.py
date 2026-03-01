@@ -15,7 +15,7 @@ class ModeMux(Node):
         self.create_subscription(String, '/mode', self.mode_cb, 10)
 
         # ---- subscribe MANUAL ----
-        self.create_subscription(Int16, '/joy_cmd_moter_dril', self.joy_motor_cb, 10)
+        self.create_subscription(Int16, '/joy_cmd_motor_dril', self.joy_motor_cb, 10)
         self.create_subscription(Int16, '/joy_cmd_gripper', self.joy_gripper_cb, 10)
         self.create_subscription(Int16, '/joy_cmd_linear', self.joy_linear_cb, 10)
         self.create_subscription(Int16, '/joy_cmd_servo_dril', self.joy_servo_cb, 10)
@@ -25,7 +25,7 @@ class ModeMux(Node):
 
 
         # ---- subscribe AUTO ----
-        self.create_subscription(Int16, '/auto_cmd_moter_dril', self.auto_motor_cb, 10)
+        self.create_subscription(Int16, '/auto_cmd_motor_dril', self.auto_motor_cb, 10)
         self.create_subscription(Int16, '/auto_cmd_gripper', self.auto_gripper_cb, 10)
         self.create_subscription(Int16, '/auto_cmd_linear', self.auto_linear_cb, 10)
         self.create_subscription(Int16, '/auto_cmd_servo_dril', self.auto_servo_cb, 10)
@@ -35,7 +35,7 @@ class ModeMux(Node):
 
 
         # ---- publishers (final command) ----
-        self.pub_motor = self.create_publisher(Int16, '/tao/cmd_moter_dril', 10)
+        self.pub_motor = self.create_publisher(Int16, '/tao/cmd_motor_dril', 10)
         self.pub_gripper = self.create_publisher(Int16, '/tao/cmd_gripper', 10)
         self.pub_linear = self.create_publisher(Int16, '/tao/cmd_linear', 10)
         self.pub_servo = self.create_publisher(Int16, '/tao/cmd_servo_dril', 10)

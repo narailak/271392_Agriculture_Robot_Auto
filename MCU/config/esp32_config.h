@@ -10,58 +10,78 @@
 // =====================================================
 #if defined(Drive_Control)
 
-// MOTOR PIN CONFIG
-#define L_DIR1  32
-#define L_PWM1  33
+// ================= Robot Specs =================
+    #define MOTOR_MAX_RPM 500                               // motor's max RPM          
+    #define MAX_RPM_RATIO 0.85                              // max RPM allowed for each MAX_RPM_ALLOWED = MOTOR_MAX_RPM * MAX_RPM_RATIO          
+    #define MOTOR_OPERATING_VOLTAGE 12                      // motor's operating voltage (used to calculate max RPM)
+    #define MOTOR_POWER_MAX_VOLTAGE 12                      // max voltage of the motor's power source (used to calculate max RPM)
+    #define MOTOR_POWER_MEASURED_VOLTAGE 12                 // current voltage reading of the power connected to the motor (used for calibration)
 
-#define L_DIR2  26
-#define L_PWM2  25
+    // ================= PWM Settings =================
+    #define PWM_BITS 10                                     // PWM Resolution of the microcontroller
+    #define PWM_FREQUENCY 20000                             // PWM Frequency
+    #define PWM_Max 1023
+    #define PWM_Min (PWM_Max * -1)
+    
+    #define WHEEL_DIAMETER 0.13                             // wheel's diameter in meters 
 
-#define R_DIR1  22
-#define R_PWM1  23
+    // ================= Motor Config =================
+    // Invert Motor Directions  
+    #define MOTOR1_INV false
+    #define MOTOR2_INV true
+    #define MOTOR3_INV false
+    #define MOTOR4_INV true
 
-#define R_DIR2  19
-#define R_PWM2  21
+    // Motor Brake
+    #define MOTOR1_BRAKE true
+    #define MOTOR2_BRAKE true
+    #define MOTOR3_BRAKE true
+    #define MOTOR4_BRAKE true
 
+    // Motor 1 Parameters (Front Left)
+    #define MOTOR1_PWM  -1
+    #define MOTOR1_IN_A 4
+    #define MOTOR1_IN_B 5 
 
-//  PWM CONFIG
-#define PWM_FREQ       20000
-#define PWM_RESOLUTION 8
+    // Motor 2 Parameters (Front Right)
+    #define MOTOR2_PWM  -1
+    #define MOTOR2_IN_A 36
+    #define MOTOR2_IN_B 35 
 
-#define PWM_CH_M1 0
-#define PWM_CH_M2 1
-#define PWM_CH_M3 2
-#define PWM_CH_M4 3
+    // Motor 3 Parameters (Back Left)
+    #define MOTOR3_PWM  -1
+    #define MOTOR3_IN_A 1 
+    #define MOTOR3_IN_B 2 
 
+    // Motor 4 Parameters (Back Right)
+    #define MOTOR4_PWM  -1
+    #define MOTOR4_IN_A 16
+    #define MOTOR4_IN_B 15
 
-//  ENCODER PIN CONFIG
-#define ENC1_A 35
-#define ENC1_B 34
+    // ================= Encoder Config =================
+    #define ENCODER_TICKS 11
+    #define GEAR_RATIO 534.0168 
+    #define COUNTS_PER_REV (ENCODER_TICKS * GEAR_RATIO * 4) // encoder resolution (23496.7392 counts per rev)
 
-#define ENC2_A 27
-#define ENC2_B 14
+    // Encoder Pins (Front Left)
+    #define Encoder_LF_A 41
+    #define Encoder_LF_B 42
+    #define ENCODER_INV_LF true
 
-#define ENC3_A 4
-#define ENC3_B 16
+    // Encoder Pins (Front Right)
+    #define Encoder_RF_A 13
+    #define Encoder_RF_B 14
+    #define ENCODER_INV_RF true
 
-#define ENC4_A 5
-#define ENC4_B 17
+    // Encoder Pins (Back Left)
+    #define Encoder_LB_A 39
+    #define Encoder_LB_B 40
+    #define ENCODER_INV_LB false
 
-
-// STEPPER TB6600
-#define PIN_PUL 13
-#define PIN_DIR 18
-#define PIN_ENA 15
-
-//   ROBOT PARAMETERS
-static const float WHEEL_RADIUS = 0.045f;   // meter
-static const float TRACK_WIDTH  = 0.30f;    // meter
-static const float MAX_RPM      = 60.0f;
-
-
-//  CONTROL PARAMETERS
-static const float DEADBAND = 0.02f;
-static const uint32_t CMD_TIMEOUT_MS = 300;
+    // Encoder Pins (Back Right)
+    #define Encoder_RB_A 38
+    #define Encoder_RB_B 37
+    #define ENCODER_INV_RB false
 
 #endif
 
@@ -72,19 +92,19 @@ static const uint32_t CMD_TIMEOUT_MS = 300;
 // =====================================================
 #if defined(Actuator_Control)
 
-// SERVO PINS 
+// ================= SERVO PINS =================
 #define PIN_SERVO_GRIPPER        16
 #define PIN_SERVO_DRIL           23
 #define PIN_SERVO_SWITCH180      17
 
-// STEPPER (TB6600) 
+// ================= STEPPER (TB6600) =================
 #define PIN_STEPPER_PUL          25
 #define PIN_STEPPER_DIR          26
 #define PIN_STEPPER_ENA          27
 
-// LIMIT SWITCH 
-#define PIN_LIMIT_LEFT           13
-#define PIN_LIMIT_RIGHT          12
+// ================= LIMIT SWITCH =================
+#define PIN_LIMIT_LEFT           13  // ซ้าย/-1
+#define PIN_LIMIT_RIGHT          12  // ขวา/+1
 
 // ================= TB6612FNG =================
 #define PIN_TB_AIN1              19
@@ -92,10 +112,10 @@ static const uint32_t CMD_TIMEOUT_MS = 300;
 #define PIN_TB_PWMA              22
 #define PIN_TB_STBY              5
 
-// PWM CONFIG
-#define TB_PWM_CHANNEL  0
-#define TB_PWM_FREQ     20000
-#define TB_PWM_RES      8
+// ================= PWM CONFIG =================
+#define TB_PWM_CHANNEL           15  // ยึดตามต้นฉบับ ใช้ 15 เพื่อเลี่ยงชนกับ ESP32Servo
+#define TB_PWM_FREQ              20000
+#define TB_PWM_RES               8
 
 #endif
 #endif
