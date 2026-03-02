@@ -29,4 +29,5 @@ v4l2-ctl --list-devices
 # internet setting 
 nmcli device status
 
-
+# reset endcodeer
+ros2 topic pub --once /tao/cmd_resetencoder geometry_msgs/msg/Twist "{linear: {x: 1.0}}"

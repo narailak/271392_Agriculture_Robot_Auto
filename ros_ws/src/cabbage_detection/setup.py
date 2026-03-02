@@ -24,9 +24,11 @@ setup(
     },
     entry_points={
         'console_scripts': [
-        'camera_publisher = cabbage_detection.camera_publisher_node:main',
-        'apriltag_node = cabbage_detection.apriltag_node:main',
-        'garden_yolo_node = cabbage_detection.garden_yolo:main',
+            'camera_publisher = cabbage_detection.camera_publisher_node:main',
+            'apriltag_node = cabbage_detection.apriltag_node:main',
+            'garden_yolo_node = cabbage_detection.garden_yolo:main',
+            # --- เพิ่มบรรทัดนี้ลงไปครับ ---
+            'cabbage_yolo_node = cabbage_detection.cabbage_yolo_node:main',
         ],
     },
 )

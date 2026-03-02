@@ -14,7 +14,7 @@ class CameraPublisher(Node):
         self.width = 640
         self.height = 480
         self.fps = 30
-        self.jpeg_quality = 70   # 0-100
+        self.jpeg_quality = 40   # 0-100
 
         # publisher
         self.publisher_ = self.create_publisher(

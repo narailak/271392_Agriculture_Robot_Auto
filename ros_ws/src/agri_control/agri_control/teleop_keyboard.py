@@ -50,6 +50,9 @@ class TaoKeyboardJoy(Node):
         self.pub_servo_dril = self.create_publisher(Int16, '/tao/cmd_servo_dril', 10)
         self.pub_servo_sw = self.create_publisher(Int16, '/tao/cmd_servo_switch180', 10)
         self.pub_step = self.create_publisher(Int16, '/tao/cmd_step_load', 10)
+        
+        # Publisher สำหรับ Servo กล้อง
+        self.pub_servo_cam = self.create_publisher(Int16, '/tao/cmd_servo_cam', 10)
 
         # ===== Speed =====
         self.linear_speed = 0.6
@@ -63,10 +66,13 @@ class TaoKeyboardJoy(Node):
 
         self.n = 8
         self.step_index = 0
+        
+        # กำหนดค่าเริ่มต้นมุมกล้อง (ให้อยู่ตรงกลางที่ 90 องศา)
+        self.servo_cam_angle = 90
 
         # debounce
         self.last_press = {}
-        self.debounce_time = 0.25
+        self.debounce_time = 0.25 # เวลาหน่วง 0.25 วินาทีต่อการรับคำสั่ง 1 ครั้ง
 
         # key hold system
         self.last_key = None
@@ -83,6 +89,9 @@ MOVE
 LINEAR ACTUATOR
  ↑ : extend
  ↓ : retract
+
+CAMERA
+ q/e : pan camera left/right (step by step)
 
 TOGGLE
  m : drill motor
@@ -151,6 +160,16 @@ CTRL+C : EXIT
                 lin.data = 0
 
             self.pub_linear.publish(lin)
+
+            # ========= CAMERA SERVO (q/e) =========
+            # ใส่ Debounce ป้องกันการรัวคำสั่ง
+            if k == 'q' and self.debounce("cam_q"):
+                self.servo_cam_angle = max(0, self.servo_cam_angle - 5)
+                self.pub_servo_cam.publish(Int16(data=self.servo_cam_angle))
+                
+            elif k == 'e' and self.debounce("cam_e"):
+                self.servo_cam_angle = min(180, self.servo_cam_angle + 5)
+                self.pub_servo_cam.publish(Int16(data=self.servo_cam_angle))
 
             # ========= MOTOR DRIL =========
             if k == 'm' and self.debounce("motor"):
