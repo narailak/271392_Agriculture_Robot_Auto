@@ -1,424 +1,424 @@
-// ================= ESP32 + micro-ROS: 3x Servo + Stepper(TB6600) + Dual Limit + TB6612FNG =================
-#include <Arduino.h>
-#include <ESP32Servo.h>
-#include <micro_ros_platformio.h>
+  // ================= ESP32 + micro-ROS: 3x Servo + Stepper(TB6600) + Dual Limit + TB6612FNG =================
+  #include <Arduino.h>
+  #include <ESP32Servo.h>
+  #include <micro_ros_platformio.h>
 
-#include <rcl/rcl.h>
-#include <rcl/error_handling.h>
-#include <rclc/rclc.h>
-#include <rclc/executor.h>
+  #include <rcl/rcl.h>
+  #include <rcl/error_handling.h>
+  #include <rclc/rclc.h>
+  #include <rclc/executor.h>
 
-#include <std_msgs/msg/int16.h>
-#include <std_msgs/msg/bool.h>   // สำหรับ Limit Switch
+  #include <std_msgs/msg/int16.h>
+  #include <std_msgs/msg/bool.h>   // สำหรับ Limit Switch
 
-// *** นำเข้า Config จากไฟล์ที่เราสร้าง ***
-#include "esp32_config.h"
+  // *** นำเข้า Config จากไฟล์ที่เราสร้าง ***
+  #include "esp32_config.h"
 
-// *** Low-level GPIO regs for fast PUL toggle (stepper) ***
-#include "soc/gpio_reg.h"
-#include "driver/gpio.h"
+  // *** Low-level GPIO regs for fast PUL toggle (stepper) ***
+  #include "soc/gpio_reg.h"
+  #include "driver/gpio.h"
 
-// ========================== Shared Helpers / Macros ==========================
-#define RCCHECK(fn) do { rcl_ret_t rc=(fn); if(rc!=RCL_RET_OK){ while(1){ delay(100); } } } while(0)
-#define RCSOFTCHECK(fn) (void)(fn)
-#define EXECUTE_EVERY_N_MS(MS, X) \
-  do{ static int64_t t__=-1; if(t__==-1)t__=uxr_millis(); \
-      if(uxr_millis()-t__>(MS)){ X; t__=uxr_millis(); } }while(0)
+  // ========================== Shared Helpers / Macros ==========================
+  #define RCCHECK(fn) do { rcl_ret_t rc=(fn); if(rc!=RCL_RET_OK){ while(1){ delay(100); } } } while(0)
+  #define RCSOFTCHECK(fn) (void)(fn)
+  #define EXECUTE_EVERY_N_MS(MS, X) \
+    do{ static int64_t t__=-1; if(t__==-1)t__=uxr_millis(); \
+        if(uxr_millis()-t__>(MS)){ X; t__=uxr_millis(); } }while(0)
 
-enum ConnState { WAITING_AGENT, AGENT_AVAILABLE, AGENT_CONNECTED, AGENT_DISCONNECTED };
-static ConnState state = WAITING_AGENT;
+  enum ConnState { WAITING_AGENT, AGENT_AVAILABLE, AGENT_CONNECTED, AGENT_DISCONNECTED };
+  static ConnState state = WAITING_AGENT;
 
-// ========================== micro-ROS globals ==========================
-rclc_executor_t   executor;
-rclc_support_t    support;
-rcl_allocator_t   allocator;
-rcl_node_t        node;
-rcl_init_options_t init_options;
+  // ========================== micro-ROS globals ==========================
+  rclc_executor_t   executor;
+  rclc_support_t    support;
+  rcl_allocator_t   allocator;
+  rcl_node_t        node;
+  rcl_init_options_t init_options;
 
-// ========================== Servo Bundle ==========================
-struct ServoChan {
-  Servo   servo;
-  int     pin;
-  int     min_us;     
-  int     max_us;     
-  int     max_deg;    
+  // ========================== Servo Bundle ==========================
+  struct ServoChan {
+    Servo   servo;
+    int     pin;
+    int     min_us;     
+    int     max_us;     
+    int     max_deg;    
 
-  const char* sub_topic;
-  const char* pub_topic;
+    const char* sub_topic;
+    const char* pub_topic;
 
-  rcl_subscription_t     sub;
-  std_msgs__msg__Int16   sub_msg;
-  rcl_publisher_t        pub;
-  std_msgs__msg__Int16   pub_msg;
+    rcl_subscription_t     sub;
+    std_msgs__msg__Int16   sub_msg;
+    rcl_publisher_t        pub;
+    std_msgs__msg__Int16   pub_msg;
 
-  int16_t  last_angle = -1;
-  uint32_t last_hb_ms = 0;
-};
+    int16_t  last_angle = -1;
+    uint32_t last_hb_ms = 0;
+  };
 
-static ServoChan make_gripper(){
-  ServoChan ch{};
-  ch.pin=PIN_SERVO_GRIPPER; ch.min_us=500; ch.max_us=2500; ch.max_deg=180;
-  ch.sub_topic="/tao/cmd_gripper"; ch.pub_topic="/tao/cmd_gripper/rpm";
-  return ch;
-}
+  static ServoChan make_gripper(){
+    ServoChan ch{};
+    ch.pin=PIN_SERVO_GRIPPER; ch.min_us=500; ch.max_us=2500; ch.max_deg=180;
+    ch.sub_topic="/tao/cmd_gripper"; ch.pub_topic="/tao/cmd_gripper/rpm";
+    return ch;
+  }
 
-static ServoChan make_dril_servo(){
-  ServoChan ch{};
-  ch.pin=PIN_SERVO_DRIL; ch.min_us=500; ch.max_us=2500; ch.max_deg=180;
-  ch.sub_topic="/tao/cmd_servo_dril"; ch.pub_topic="/tao/cmd_servo_dril/rpm";
-  return ch;
-}
+  static ServoChan make_dril_servo(){
+    ServoChan ch{};
+    ch.pin=PIN_SERVO_DRIL; ch.min_us=500; ch.max_us=2500; ch.max_deg=180;
+    ch.sub_topic="/tao/cmd_servo_dril"; ch.pub_topic="/tao/cmd_servo_dril/rpm";
+    return ch;
+  }
 
-static ServoChan make_sw180(){
-  ServoChan ch{};
-  ch.pin=PIN_SERVO_SWITCH180; ch.min_us=500; ch.max_us=2500; ch.max_deg=270;
-  ch.sub_topic="/tao/cmd_servo_switch180"; ch.pub_topic="/tao/cmd_servo_switch180/rpm";
-  return ch;
-}
+  static ServoChan make_sw180(){
+    ServoChan ch{};
+    ch.pin=PIN_SERVO_SWITCH180; ch.min_us=500; ch.max_us=2500; ch.max_deg=270;
+    ch.sub_topic="/tao/cmd_servo_switch180"; ch.pub_topic="/tao/cmd_servo_switch180/rpm";
+    return ch;
+  }
 
-static ServoChan CH_GRIPPER     = make_gripper();
-static ServoChan CH_DRIL_SERVO  = make_dril_servo();
-static ServoChan CH_SW180       = make_sw180();
+  static ServoChan CH_GRIPPER     = make_gripper();
+  static ServoChan CH_DRIL_SERVO  = make_dril_servo();
+  static ServoChan CH_SW180       = make_sw180();
 
-static inline int clamp_angle(const ServoChan& ch, int angle){
-  if(angle < 0) angle = 0;
-  if(angle > ch.max_deg) angle = ch.max_deg;
-  return angle;
-}
-static inline int angle_to_us(const ServoChan& ch, int angle){
-  long span = (long)ch.max_us - (long)ch.min_us;
-  long us   = (long)ch.min_us + (long)angle * span / (long)ch.max_deg;
-  if(us < ch.min_us) us = ch.min_us;
-  if(us > ch.max_us) us = ch.max_us;
-  return (int)us;
-}
-static inline void move_servo_angle(ServoChan& ch, int angle){
-  ch.servo.writeMicroseconds(angle_to_us(ch, angle));
-}
-static inline void publish_fb_servo(ServoChan& ch, int16_t angle){
-  ch.pub_msg.data = angle; RCSOFTCHECK(rcl_publish(&ch.pub, &ch.pub_msg, NULL));
-}
+  static inline int clamp_angle(const ServoChan& ch, int angle){
+    if(angle < 0) angle = 0;
+    if(angle > ch.max_deg) angle = ch.max_deg;
+    return angle;
+  }
+  static inline int angle_to_us(const ServoChan& ch, int angle){
+    long span = (long)ch.max_us - (long)ch.min_us;
+    long us   = (long)ch.min_us + (long)angle * span / (long)ch.max_deg;
+    if(us < ch.min_us) us = ch.min_us;
+    if(us > ch.max_us) us = ch.max_us;
+    return (int)us;
+  }
+  static inline void move_servo_angle(ServoChan& ch, int angle){
+    ch.servo.writeMicroseconds(angle_to_us(ch, angle));
+  }
+  static inline void publish_fb_servo(ServoChan& ch, int16_t angle){
+    ch.pub_msg.data = angle; RCSOFTCHECK(rcl_publish(&ch.pub, &ch.pub_msg, NULL));
+  }
 
-static void sub_cb_gripper(const void* msgin){
-  const auto* m=(const std_msgs__msg__Int16*)msgin; int a=clamp_angle(CH_GRIPPER,(int)m->data);
-  move_servo_angle(CH_GRIPPER,a); CH_GRIPPER.last_angle=a; publish_fb_servo(CH_GRIPPER,a);
-}
-static void sub_cb_dril_servo(const void* msgin){
-  const auto* m=(const std_msgs__msg__Int16*)msgin; int a=clamp_angle(CH_DRIL_SERVO,(int)m->data);
-  move_servo_angle(CH_DRIL_SERVO,a); CH_DRIL_SERVO.last_angle=a; publish_fb_servo(CH_DRIL_SERVO,a);
-}
-static void sub_cb_sw180(const void* msgin){
-  const auto* m=(const std_msgs__msg__Int16*)msgin; int a=clamp_angle(CH_SW180,(int)m->data);
-  move_servo_angle(CH_SW180,a); CH_SW180.last_angle=a; publish_fb_servo(CH_SW180,a);
-}
+  static void sub_cb_gripper(const void* msgin){
+    const auto* m=(const std_msgs__msg__Int16*)msgin; int a=clamp_angle(CH_GRIPPER,(int)m->data);
+    move_servo_angle(CH_GRIPPER,a); CH_GRIPPER.last_angle=a; publish_fb_servo(CH_GRIPPER,a);
+  }
+  static void sub_cb_dril_servo(const void* msgin){
+    const auto* m=(const std_msgs__msg__Int16*)msgin; int a=clamp_angle(CH_DRIL_SERVO,(int)m->data);
+    move_servo_angle(CH_DRIL_SERVO,a); CH_DRIL_SERVO.last_angle=a; publish_fb_servo(CH_DRIL_SERVO,a);
+  }
+  static void sub_cb_sw180(const void* msgin){
+    const auto* m=(const std_msgs__msg__Int16*)msgin; int a=clamp_angle(CH_SW180,(int)m->data);
+    move_servo_angle(CH_SW180,a); CH_SW180.last_angle=a; publish_fb_servo(CH_SW180,a);
+  }
 
-// ========================== Stepper (TB6600) ==========================
-#define BASE_STEPS_PER_REV  200   
-#define MICROSTEP           16   
-#define PULSES_PER_REV      (BASE_STEPS_PER_REV * MICROSTEP) 
+  // ========================== Stepper (TB6600) ==========================
+  #define BASE_STEPS_PER_REV  200   
+  #define MICROSTEP           16   
+  #define PULSES_PER_REV      (BASE_STEPS_PER_REV * MICROSTEP) 
 
-static volatile uint32_t HALF_PERIOD_US = 20;  
-static inline void set_speed_rpm(float rpm){
-  float pps = rpm * (float)PULSES_PER_REV / 60.0f;
-  if (pps < 1.0f) pps = 1.0f;
-  uint32_t half = (uint32_t)(1000000.0f / (2.0f * pps)); 
-  if (half < 2) half = 2; 
-  HALF_PERIOD_US = half;
-}
-static inline float current_rpm(){
-  float pps = 1000000.0f / (2.0f * (float)HALF_PERIOD_US);
-  return (pps * 60.0f) / (float)PULSES_PER_REV;
-}
+  static volatile uint32_t HALF_PERIOD_US = 20;  
+  static inline void set_speed_rpm(float rpm){
+    float pps = rpm * (float)PULSES_PER_REV / 60.0f;
+    if (pps < 1.0f) pps = 1.0f;
+    uint32_t half = (uint32_t)(1000000.0f / (2.0f * pps)); 
+    if (half < 2) half = 2; 
+    HALF_PERIOD_US = half;
+  }
+  static inline float current_rpm(){
+    float pps = 1000000.0f / (2.0f * (float)HALF_PERIOD_US);
+    return (pps * 60.0f) / (float)PULSES_PER_REV;
+  }
 
-rcl_subscription_t     sub_cmd_linear;
-std_msgs__msg__Int16   cmd_msg_linear;
-rcl_publisher_t        pub_fb_linear;
-std_msgs__msg__Int16   fb_msg_linear;
+  rcl_subscription_t     sub_cmd_linear;
+  std_msgs__msg__Int16   cmd_msg_linear;
+  rcl_publisher_t        pub_fb_linear;
+  std_msgs__msg__Int16   fb_msg_linear;
 
-static volatile int8_t RUN_DIR = 0; 
-static volatile bool   pul_high = false;
-hw_timer_t* tmr = nullptr;
-portMUX_TYPE spinlock = portMUX_INITIALIZER_UNLOCKED;
-static volatile bool   limit_hit_flag = false;
-static volatile int8_t limit_side     = 0;
+  static volatile int8_t RUN_DIR = 0; 
+  static volatile bool   pul_high = false;
+  hw_timer_t* tmr = nullptr;
+  portMUX_TYPE spinlock = portMUX_INITIALIZER_UNLOCKED;
+  static volatile bool   limit_hit_flag = false;
+  static volatile int8_t limit_side     = 0;
 
-static inline bool limit1_pressed() { return digitalRead(PIN_LIMIT_LEFT)==LOW; }
-static inline bool limit2_pressed() { return digitalRead(PIN_LIMIT_RIGHT)==LOW; }
-static inline void enable_driver(bool en_low=true){ digitalWrite(PIN_STEPPER_ENA, en_low?LOW:HIGH); }
-static inline void set_direction(int8_t dir){ digitalWrite(PIN_STEPPER_DIR, (dir==1)?LOW:HIGH); }
-static inline bool can_run_dir(int8_t dir){
-  if(dir==+1 && limit2_pressed()) return false;
-  if(dir==-1 && limit1_pressed()) return false;
-  return true;
-}
-static inline void publish_echo_linear(int16_t v){
-  fb_msg_linear.data=v; RCSOFTCHECK(rcl_publish(&pub_fb_linear,&fb_msg_linear,NULL));
-}
-static inline void start_run(int8_t dir){
-  if(dir!=1 && dir!=-1) return;
-  if(!can_run_dir(dir)){ fb_msg_linear.data=(dir==+1)?+2:-2; RCSOFTCHECK(rcl_publish(&pub_fb_linear,&fb_msg_linear,NULL)); return; }
-  set_direction(dir); enable_driver(true);
-  portENTER_CRITICAL_ISR(&spinlock); RUN_DIR=dir; portEXIT_CRITICAL_ISR(&spinlock);
-}
-static inline void stop_now_core(){
-  portENTER_CRITICAL_ISR(&spinlock); RUN_DIR=0; portEXIT_CRITICAL_ISR(&spinlock);
-  REG_WRITE(GPIO_OUT_W1TC_REG, (1U<<PIN_STEPPER_PUL)); pul_high=false; enable_driver(false);
-}
-static inline void stop_now_from_cmd(){ stop_now_core(); }
-
-void IRAM_ATTR onTimer(){
-  if(RUN_DIR==0){ if(pul_high){ REG_WRITE(GPIO_OUT_W1TC_REG,(1U<<PIN_STEPPER_PUL)); pul_high=false; } return; }
-  if((RUN_DIR==+1 && gpio_get_level((gpio_num_t)PIN_LIMIT_RIGHT)==0) ||
-     (RUN_DIR==-1 && gpio_get_level((gpio_num_t)PIN_LIMIT_LEFT)==0)){
+  static inline bool limit1_pressed() { return digitalRead(PIN_LIMIT_LEFT)==LOW; }
+  static inline bool limit2_pressed() { return digitalRead(PIN_LIMIT_RIGHT)==LOW; }
+  static inline void enable_driver(bool en_low=true){ digitalWrite(PIN_STEPPER_ENA, en_low?LOW:HIGH); }
+  static inline void set_direction(int8_t dir){ digitalWrite(PIN_STEPPER_DIR, (dir==1)?LOW:HIGH); }
+  static inline bool can_run_dir(int8_t dir){
+    if(dir==+1 && limit2_pressed()) return false;
+    if(dir==-1 && limit1_pressed()) return false;
+    return true;
+  }
+  static inline void publish_echo_linear(int16_t v){
+    fb_msg_linear.data=v; RCSOFTCHECK(rcl_publish(&pub_fb_linear,&fb_msg_linear,NULL));
+  }
+  static inline void start_run(int8_t dir){
+    if(dir!=1 && dir!=-1) return;
+    if(!can_run_dir(dir)){ fb_msg_linear.data=(dir==+1)?+2:-2; RCSOFTCHECK(rcl_publish(&pub_fb_linear,&fb_msg_linear,NULL)); return; }
+    set_direction(dir); enable_driver(true);
+    portENTER_CRITICAL_ISR(&spinlock); RUN_DIR=dir; portEXIT_CRITICAL_ISR(&spinlock);
+  }
+  static inline void stop_now_core(){
     portENTER_CRITICAL_ISR(&spinlock); RUN_DIR=0; portEXIT_CRITICAL_ISR(&spinlock);
-    REG_WRITE(GPIO_OUT_W1TC_REG,(1U<<PIN_STEPPER_PUL)); pul_high=false; limit_hit_flag=true;
-    limit_side = (gpio_get_level((gpio_num_t)PIN_LIMIT_RIGHT)==0)?+1:-1; return;
+    REG_WRITE(GPIO_OUT_W1TC_REG, (1U<<PIN_STEPPER_PUL)); pul_high=false; enable_driver(false);
   }
-  uint32_t mask=(1U<<PIN_STEPPER_PUL);
-  if(!pul_high){ REG_WRITE(GPIO_OUT_W1TS_REG,mask); pul_high=true; }
-  else{ REG_WRITE(GPIO_OUT_W1TC_REG,mask); pul_high=false; }
-  timerAlarmWrite(tmr, HALF_PERIOD_US, true);
-}
-void IRAM_ATTR onLimit1(){
-  if(gpio_get_level((gpio_num_t)PIN_LIMIT_LEFT)==0){
-    portENTER_CRITICAL_ISR(&spinlock); RUN_DIR=0; portEXIT_CRITICAL_ISR(&spinlock);
-    REG_WRITE(GPIO_OUT_W1TC_REG,(1U<<PIN_STEPPER_PUL)); pul_high=false; limit_hit_flag=true; limit_side=-1;
+  static inline void stop_now_from_cmd(){ stop_now_core(); }
+
+  void IRAM_ATTR onTimer(){
+    if(RUN_DIR==0){ if(pul_high){ REG_WRITE(GPIO_OUT_W1TC_REG,(1U<<PIN_STEPPER_PUL)); pul_high=false; } return; }
+    if((RUN_DIR==+1 && gpio_get_level((gpio_num_t)PIN_LIMIT_RIGHT)==0) ||
+      (RUN_DIR==-1 && gpio_get_level((gpio_num_t)PIN_LIMIT_LEFT)==0)){
+      portENTER_CRITICAL_ISR(&spinlock); RUN_DIR=0; portEXIT_CRITICAL_ISR(&spinlock);
+      REG_WRITE(GPIO_OUT_W1TC_REG,(1U<<PIN_STEPPER_PUL)); pul_high=false; limit_hit_flag=true;
+      limit_side = (gpio_get_level((gpio_num_t)PIN_LIMIT_RIGHT)==0)?+1:-1; return;
+    }
+    uint32_t mask=(1U<<PIN_STEPPER_PUL);
+    if(!pul_high){ REG_WRITE(GPIO_OUT_W1TS_REG,mask); pul_high=true; }
+    else{ REG_WRITE(GPIO_OUT_W1TC_REG,mask); pul_high=false; }
+    timerAlarmWrite(tmr, HALF_PERIOD_US, true);
   }
-}
-void IRAM_ATTR onLimit2(){
-  if(gpio_get_level((gpio_num_t)PIN_LIMIT_RIGHT)==0){
-    portENTER_CRITICAL_ISR(&spinlock); RUN_DIR=0; portEXIT_CRITICAL_ISR(&spinlock);
-    REG_WRITE(GPIO_OUT_W1TC_REG,(1U<<PIN_STEPPER_PUL)); pul_high=false; limit_hit_flag=true; limit_side=+1;
+  void IRAM_ATTR onLimit1(){
+    if(gpio_get_level((gpio_num_t)PIN_LIMIT_LEFT)==0){
+      portENTER_CRITICAL_ISR(&spinlock); RUN_DIR=0; portEXIT_CRITICAL_ISR(&spinlock);
+      REG_WRITE(GPIO_OUT_W1TC_REG,(1U<<PIN_STEPPER_PUL)); pul_high=false; limit_hit_flag=true; limit_side=-1;
+    }
   }
-}
-static void cmd_cb_linear(const void* msgin){
-  const auto* m=(const std_msgs__msg__Int16*)msgin; const int16_t cmd=m->data; publish_echo_linear(cmd);
-  // สลับทิศทางการหมุนตามที่ต้องการ
-  if(cmd==1){ start_run(+1); Serial.println("[LINEAR] cmd=+1 -> run CW (continuous)"); }
-  else if(cmd==-1){ start_run(-1); Serial.println("[LINEAR] cmd=-1 -> run CCW (continuous)"); }
-  else if(cmd==0){ stop_now_from_cmd(); Serial.println("[LINEAR] cmd=0 -> STOP"); }
-}
-
-// ========================== TB6612FNG (ดริลมอเตอร์) ==========================
-rcl_subscription_t   sub_cmd_dril_motor;
-std_msgs__msg__Int16 cmd_msg_dril_motor;
-rcl_publisher_t      pub_fb_dril_motor;
-std_msgs__msg__Int16 fb_msg_dril_motor;
-
-static int16_t  last_cmd_percent = 0;   
-static uint32_t last_hb_ms_dril = 0;
-
-static inline void motor_coast(){
-  ledcWrite(TB_PWM_CHANNEL, 0);
-  digitalWrite(PIN_TB_AIN1, LOW);
-  digitalWrite(PIN_TB_AIN2, LOW);
-}
-static inline void motor_forward(uint8_t pwm){
-  digitalWrite(PIN_TB_AIN1, HIGH);
-  digitalWrite(PIN_TB_AIN2, LOW);
-  ledcWrite(TB_PWM_CHANNEL, pwm);
-}
-static inline void publish_fb_dril_motor(int16_t percent){
-  fb_msg_dril_motor.data = percent;
-  RCSOFTCHECK(rcl_publish(&pub_fb_dril_motor, &fb_msg_dril_motor, NULL));
-}
-static void cmd_cb_dril_motor(const void* msgin){
-  const auto* m=(const std_msgs__msg__Int16*)msgin;
-  int val=(int)m->data;
-  if(val<=0){
-    motor_coast(); last_cmd_percent=0; publish_fb_dril_motor(last_cmd_percent); return;
+  void IRAM_ATTR onLimit2(){
+    if(gpio_get_level((gpio_num_t)PIN_LIMIT_RIGHT)==0){
+      portENTER_CRITICAL_ISR(&spinlock); RUN_DIR=0; portEXIT_CRITICAL_ISR(&spinlock);
+      REG_WRITE(GPIO_OUT_W1TC_REG,(1U<<PIN_STEPPER_PUL)); pul_high=false; limit_hit_flag=true; limit_side=+1;
+    }
   }
-  if(val>100) val=100;
-  uint8_t duty = (uint8_t) map(val, 1, 100, 0, 255); 
-  motor_forward(duty);
-  last_cmd_percent=(int16_t)val;
-  publish_fb_dril_motor(last_cmd_percent);
-}
+  static void cmd_cb_linear(const void* msgin){
+    const auto* m=(const std_msgs__msg__Int16*)msgin; const int16_t cmd=m->data; publish_echo_linear(cmd);
+    // สลับทิศทางการหมุนตามที่ต้องการ
+    if(cmd==1){ start_run(+1); Serial.println("[LINEAR] cmd=+1 -> run CW (continuous)"); }
+    else if(cmd==-1){ start_run(-1); Serial.println("[LINEAR] cmd=-1 -> run CCW (continuous)"); }
+    else if(cmd==0){ stop_now_from_cmd(); Serial.println("[LINEAR] cmd=0 -> STOP"); }
+  }
 
-// ========================== Limit Switch Publishers ==========================
-rcl_publisher_t      pub_limit_left;
-std_msgs__msg__Bool  msg_limit_left;
-rcl_publisher_t      pub_limit_right;
-std_msgs__msg__Bool  msg_limit_right;
-static uint32_t      last_hb_ms_limit = 0;
+  // ========================== TB6612FNG (ดริลมอเตอร์) ==========================
+  rcl_subscription_t   sub_cmd_dril_motor;
+  std_msgs__msg__Int16 cmd_msg_dril_motor;
+  rcl_publisher_t      pub_fb_dril_motor;
+  std_msgs__msg__Int16 fb_msg_dril_motor;
 
-// ========================== micro-ROS Entities (All-in-one) ==========================
-static bool createEntities(){
-  allocator = rcl_get_default_allocator();
-  init_options = rcl_get_zero_initialized_init_options();
-  RCCHECK(rcl_init_options_init(&init_options, allocator));
-  RCCHECK(rcl_init_options_set_domain_id(&init_options, 96));  // ROS_DOMAIN_ID = 96
-  RCCHECK(rclc_support_init_with_options(&support, 0, NULL, &init_options, &allocator));
-  RCCHECK(rclc_node_init_default(&node, "esp32_multi_peripheral_node", "", &support));
+  static int16_t  last_cmd_percent = 0;   
+  static uint32_t last_hb_ms_dril = 0;
 
-  // --- Pubs ---
-  RCCHECK(rclc_publisher_init_best_effort(&CH_GRIPPER.pub,&node,ROSIDL_GET_MSG_TYPE_SUPPORT(std_msgs,msg,Int16),CH_GRIPPER.pub_topic));
-  RCCHECK(rclc_publisher_init_best_effort(&CH_DRIL_SERVO.pub,&node,ROSIDL_GET_MSG_TYPE_SUPPORT(std_msgs,msg,Int16),CH_DRIL_SERVO.pub_topic));
-  RCCHECK(rclc_publisher_init_best_effort(&CH_SW180.pub,&node,ROSIDL_GET_MSG_TYPE_SUPPORT(std_msgs,msg,Int16),CH_SW180.pub_topic));
-  RCCHECK(rclc_publisher_init_best_effort(&pub_fb_linear,&node,ROSIDL_GET_MSG_TYPE_SUPPORT(std_msgs,msg,Int16),"/tao/cmd_linear/fb"));
-  RCCHECK(rclc_publisher_init_best_effort(&pub_fb_dril_motor,&node,ROSIDL_GET_MSG_TYPE_SUPPORT(std_msgs,msg,Int16),"/tao/cmd_motor_dril/fb"));
-  RCCHECK(rclc_publisher_init_best_effort(&pub_limit_left, &node, ROSIDL_GET_MSG_TYPE_SUPPORT(std_msgs, msg, Bool), "/tao/fb/limit_left"));
-  RCCHECK(rclc_publisher_init_best_effort(&pub_limit_right, &node, ROSIDL_GET_MSG_TYPE_SUPPORT(std_msgs, msg, Bool), "/tao/fb/limit_right"));
+  static inline void motor_coast(){
+    ledcWrite(TB_PWM_CHANNEL, 0);
+    digitalWrite(PIN_TB_AIN1, LOW);
+    digitalWrite(PIN_TB_AIN2, LOW);
+  }
+  static inline void motor_forward(uint8_t pwm){
+    digitalWrite(PIN_TB_AIN1, HIGH);
+    digitalWrite(PIN_TB_AIN2, LOW);
+    ledcWrite(TB_PWM_CHANNEL, pwm);
+  }
+  static inline void publish_fb_dril_motor(int16_t percent){
+    fb_msg_dril_motor.data = percent;
+    RCSOFTCHECK(rcl_publish(&pub_fb_dril_motor, &fb_msg_dril_motor, NULL));
+  }
+  static void cmd_cb_dril_motor(const void* msgin){
+    const auto* m=(const std_msgs__msg__Int16*)msgin;
+    int val=(int)m->data;
+    if(val<=0){
+      motor_coast(); last_cmd_percent=0; publish_fb_dril_motor(last_cmd_percent); return;
+    }
+    if(val>100) val=100;
+    uint8_t duty = (uint8_t) map(val, 1, 100, 0, 255); 
+    motor_forward(duty);
+    last_cmd_percent=(int16_t)val;
+    publish_fb_dril_motor(last_cmd_percent);
+  }
 
-  // --- Subs ---
-  RCCHECK(rclc_subscription_init_default(&CH_GRIPPER.sub,&node,ROSIDL_GET_MSG_TYPE_SUPPORT(std_msgs,msg,Int16),CH_GRIPPER.sub_topic));
-  RCCHECK(rclc_subscription_init_default(&CH_DRIL_SERVO.sub,&node,ROSIDL_GET_MSG_TYPE_SUPPORT(std_msgs,msg,Int16),CH_DRIL_SERVO.sub_topic));
-  RCCHECK(rclc_subscription_init_default(&CH_SW180.sub,&node,ROSIDL_GET_MSG_TYPE_SUPPORT(std_msgs,msg,Int16),CH_SW180.sub_topic));
-  RCCHECK(rclc_subscription_init_default(&sub_cmd_linear,&node,ROSIDL_GET_MSG_TYPE_SUPPORT(std_msgs,msg,Int16),"/tao/cmd_linear"));
-  RCCHECK(rclc_subscription_init_default(&sub_cmd_dril_motor,&node,ROSIDL_GET_MSG_TYPE_SUPPORT(std_msgs,msg,Int16),"/tao/cmd_motor_dril"));
+  // ========================== Limit Switch Publishers ==========================
+  rcl_publisher_t      pub_limit_left;
+  std_msgs__msg__Bool  msg_limit_left;
+  rcl_publisher_t      pub_limit_right;
+  std_msgs__msg__Bool  msg_limit_right;
+  static uint32_t      last_hb_ms_limit = 0;
 
-  // --- Executor ---
-  RCCHECK(rclc_executor_init(&executor, &support.context, 5, &allocator));
-  RCCHECK(rclc_executor_add_subscription(&executor,&CH_GRIPPER.sub,&CH_GRIPPER.sub_msg,&sub_cb_gripper,ON_NEW_DATA));
-  RCCHECK(rclc_executor_add_subscription(&executor,&CH_DRIL_SERVO.sub,&CH_DRIL_SERVO.sub_msg,&sub_cb_dril_servo,ON_NEW_DATA));
-  RCCHECK(rclc_executor_add_subscription(&executor,&CH_SW180.sub,&CH_SW180.sub_msg,&sub_cb_sw180,ON_NEW_DATA));
-  RCCHECK(rclc_executor_add_subscription(&executor,&sub_cmd_linear,&cmd_msg_linear,&cmd_cb_linear,ON_NEW_DATA));
-  RCCHECK(rclc_executor_add_subscription(&executor,&sub_cmd_dril_motor,&cmd_msg_dril_motor,&cmd_cb_dril_motor,ON_NEW_DATA));
+  // ========================== micro-ROS Entities (All-in-one) ==========================
+  static bool createEntities(){
+    allocator = rcl_get_default_allocator();
+    init_options = rcl_get_zero_initialized_init_options();
+    RCCHECK(rcl_init_options_init(&init_options, allocator));
+    RCCHECK(rcl_init_options_set_domain_id(&init_options, 96));  // ROS_DOMAIN_ID = 96
+    RCCHECK(rclc_support_init_with_options(&support, 0, NULL, &init_options, &allocator));
+    RCCHECK(rclc_node_init_default(&node, "esp32_multi_peripheral_node", "", &support));
 
-  // --- Init states ---
-  CH_GRIPPER.last_angle=0; move_servo_angle(CH_GRIPPER,0); publish_fb_servo(CH_GRIPPER,0);
-  CH_DRIL_SERVO.last_angle=0; move_servo_angle(CH_DRIL_SERVO,0); publish_fb_servo(CH_DRIL_SERVO,0);
-  CH_SW180.last_angle=0; move_servo_angle(CH_SW180,0); publish_fb_servo(CH_SW180,0);
-  last_cmd_percent=0; publish_fb_dril_motor(last_cmd_percent);
+    // --- Pubs ---
+    RCCHECK(rclc_publisher_init_best_effort(&CH_GRIPPER.pub,&node,ROSIDL_GET_MSG_TYPE_SUPPORT(std_msgs,msg,Int16),CH_GRIPPER.pub_topic));
+    RCCHECK(rclc_publisher_init_best_effort(&CH_DRIL_SERVO.pub,&node,ROSIDL_GET_MSG_TYPE_SUPPORT(std_msgs,msg,Int16),CH_DRIL_SERVO.pub_topic));
+    RCCHECK(rclc_publisher_init_best_effort(&CH_SW180.pub,&node,ROSIDL_GET_MSG_TYPE_SUPPORT(std_msgs,msg,Int16),CH_SW180.pub_topic));
+    RCCHECK(rclc_publisher_init_best_effort(&pub_fb_linear,&node,ROSIDL_GET_MSG_TYPE_SUPPORT(std_msgs,msg,Int16),"/tao/cmd_linear/fb"));
+    RCCHECK(rclc_publisher_init_best_effort(&pub_fb_dril_motor,&node,ROSIDL_GET_MSG_TYPE_SUPPORT(std_msgs,msg,Int16),"/tao/cmd_motor_dril/fb"));
+    RCCHECK(rclc_publisher_init_best_effort(&pub_limit_left, &node, ROSIDL_GET_MSG_TYPE_SUPPORT(std_msgs, msg, Bool), "/tao/fb/limit_left"));
+    RCCHECK(rclc_publisher_init_best_effort(&pub_limit_right, &node, ROSIDL_GET_MSG_TYPE_SUPPORT(std_msgs, msg, Bool), "/tao/fb/limit_right"));
 
-  return true;
-}
+    // --- Subs ---
+    RCCHECK(rclc_subscription_init_default(&CH_GRIPPER.sub,&node,ROSIDL_GET_MSG_TYPE_SUPPORT(std_msgs,msg,Int16),CH_GRIPPER.sub_topic));
+    RCCHECK(rclc_subscription_init_default(&CH_DRIL_SERVO.sub,&node,ROSIDL_GET_MSG_TYPE_SUPPORT(std_msgs,msg,Int16),CH_DRIL_SERVO.sub_topic));
+    RCCHECK(rclc_subscription_init_default(&CH_SW180.sub,&node,ROSIDL_GET_MSG_TYPE_SUPPORT(std_msgs,msg,Int16),CH_SW180.sub_topic));
+    RCCHECK(rclc_subscription_init_default(&sub_cmd_linear,&node,ROSIDL_GET_MSG_TYPE_SUPPORT(std_msgs,msg,Int16),"/tao/cmd_linear"));
+    RCCHECK(rclc_subscription_init_default(&sub_cmd_dril_motor,&node,ROSIDL_GET_MSG_TYPE_SUPPORT(std_msgs,msg,Int16),"/tao/cmd_motor_dril"));
 
-static bool destroyEntities(){
-  rmw_context_t* rmw_ctx = rcl_context_get_rmw_context(&support.context);
-  (void)rmw_uros_set_context_entity_destroy_session_timeout(rmw_ctx, 0);
+    // --- Executor ---
+    RCCHECK(rclc_executor_init(&executor, &support.context, 5, &allocator));
+    RCCHECK(rclc_executor_add_subscription(&executor,&CH_GRIPPER.sub,&CH_GRIPPER.sub_msg,&sub_cb_gripper,ON_NEW_DATA));
+    RCCHECK(rclc_executor_add_subscription(&executor,&CH_DRIL_SERVO.sub,&CH_DRIL_SERVO.sub_msg,&sub_cb_dril_servo,ON_NEW_DATA));
+    RCCHECK(rclc_executor_add_subscription(&executor,&CH_SW180.sub,&CH_SW180.sub_msg,&sub_cb_sw180,ON_NEW_DATA));
+    RCCHECK(rclc_executor_add_subscription(&executor,&sub_cmd_linear,&cmd_msg_linear,&cmd_cb_linear,ON_NEW_DATA));
+    RCCHECK(rclc_executor_add_subscription(&executor,&sub_cmd_dril_motor,&cmd_msg_dril_motor,&cmd_cb_dril_motor,ON_NEW_DATA));
 
-  (void)rcl_subscription_fini(&sub_cmd_linear, &node);
-  (void)rcl_publisher_fini(&pub_fb_linear, &node);
-  (void)rcl_subscription_fini(&sub_cmd_dril_motor, &node);
-  (void)rcl_publisher_fini(&pub_fb_dril_motor, &node);
-  (void)rcl_subscription_fini(&CH_GRIPPER.sub, &node);
-  (void)rcl_subscription_fini(&CH_DRIL_SERVO.sub, &node);
-  (void)rcl_subscription_fini(&CH_SW180.sub, &node);
-  (void)rcl_publisher_fini(&CH_GRIPPER.pub, &node);
-  (void)rcl_publisher_fini(&CH_DRIL_SERVO.pub, &node);
-  (void)rcl_publisher_fini(&CH_SW180.pub, &node);
-  (void)rcl_publisher_fini(&pub_limit_left, &node);
-  (void)rcl_publisher_fini(&pub_limit_right, &node);
+    // --- Init states ---
+    CH_GRIPPER.last_angle=0; move_servo_angle(CH_GRIPPER,0); publish_fb_servo(CH_GRIPPER,0);
+    CH_DRIL_SERVO.last_angle=0; move_servo_angle(CH_DRIL_SERVO,0); publish_fb_servo(CH_DRIL_SERVO,0);
+    CH_SW180.last_angle=0; move_servo_angle(CH_SW180,0); publish_fb_servo(CH_SW180,0);
+    last_cmd_percent=0; publish_fb_dril_motor(last_cmd_percent);
 
-  rclc_executor_fini(&executor);
-  (void)rcl_node_fini(&node);
-  rclc_support_fini(&support);
-  return true;
-}
+    return true;
+  }
 
-// ========================== Arduino setup/loop ==========================
-void setup(){
-  // --- Stepper GPIO ---
-  pinMode(PIN_STEPPER_PUL, OUTPUT); pinMode(PIN_STEPPER_DIR, OUTPUT); pinMode(PIN_STEPPER_ENA, OUTPUT);
-  digitalWrite(PIN_STEPPER_PUL, LOW); digitalWrite(PIN_STEPPER_DIR, LOW); enable_driver(false);
+  static bool destroyEntities(){
+    rmw_context_t* rmw_ctx = rcl_context_get_rmw_context(&support.context);
+    (void)rmw_uros_set_context_entity_destroy_session_timeout(rmw_ctx, 0);
 
-  // --- Limit switches ---
-  pinMode(PIN_LIMIT_LEFT, INPUT_PULLUP);
-  pinMode(PIN_LIMIT_RIGHT, INPUT_PULLUP);
-  attachInterrupt(digitalPinToInterrupt(PIN_LIMIT_LEFT), onLimit1, FALLING);
-  attachInterrupt(digitalPinToInterrupt(PIN_LIMIT_RIGHT), onLimit2, FALLING);
+    (void)rcl_subscription_fini(&sub_cmd_linear, &node);
+    (void)rcl_publisher_fini(&pub_fb_linear, &node);
+    (void)rcl_subscription_fini(&sub_cmd_dril_motor, &node);
+    (void)rcl_publisher_fini(&pub_fb_dril_motor, &node);
+    (void)rcl_subscription_fini(&CH_GRIPPER.sub, &node);
+    (void)rcl_subscription_fini(&CH_DRIL_SERVO.sub, &node);
+    (void)rcl_subscription_fini(&CH_SW180.sub, &node);
+    (void)rcl_publisher_fini(&CH_GRIPPER.pub, &node);
+    (void)rcl_publisher_fini(&CH_DRIL_SERVO.pub, &node);
+    (void)rcl_publisher_fini(&CH_SW180.pub, &node);
+    (void)rcl_publisher_fini(&pub_limit_left, &node);
+    (void)rcl_publisher_fini(&pub_limit_right, &node);
 
-  // --- Serial & transport ---
-  Serial.begin(115200); delay(50);
-  set_microros_serial_transports(Serial);
-  Serial.println("[INFO] ESP32 Multi Ready");
+    rclc_executor_fini(&executor);
+    (void)rcl_node_fini(&node);
+    rclc_support_fini(&support);
+    return true;
+  }
 
-  // --- Stepper timer ---
-  tmr = timerBegin(0, 80, true);         
-  timerAttachInterrupt(tmr, &onTimer, true);
-  timerAlarmWrite(tmr, HALF_PERIOD_US, true);
-  timerAlarmEnable(tmr);
+  // ========================== Arduino setup/loop ==========================
+  void setup(){
+    // --- Stepper GPIO ---
+    pinMode(PIN_STEPPER_PUL, OUTPUT); pinMode(PIN_STEPPER_DIR, OUTPUT); pinMode(PIN_STEPPER_ENA, OUTPUT);
+    digitalWrite(PIN_STEPPER_PUL, LOW); digitalWrite(PIN_STEPPER_DIR, LOW); enable_driver(false);
 
-  set_speed_rpm(90.0f);  
+    // --- Limit switches ---
+    pinMode(PIN_LIMIT_LEFT, INPUT_PULLUP);
+    pinMode(PIN_LIMIT_RIGHT, INPUT_PULLUP);
+    attachInterrupt(digitalPinToInterrupt(PIN_LIMIT_LEFT), onLimit1, FALLING);
+    attachInterrupt(digitalPinToInterrupt(PIN_LIMIT_RIGHT), onLimit2, FALLING);
 
-  // --- Attach servos ---
-  CH_GRIPPER    .servo.attach(CH_GRIPPER.pin,     CH_GRIPPER.min_us,     CH_GRIPPER.max_us);
-  CH_DRIL_SERVO .servo.attach(CH_DRIL_SERVO.pin,  CH_DRIL_SERVO.min_us,  CH_DRIL_SERVO.max_us);
-  CH_SW180      .servo.attach(CH_SW180.pin,       CH_SW180.min_us,       CH_SW180.max_us);
+    // --- Serial & transport ---
+    Serial.begin(115200); delay(50);
+    set_microros_serial_transports(Serial);
+    Serial.println("[INFO] ESP32 Multi Ready");
 
-  // --- TB6612 pins & PWM ---
-  pinMode(PIN_TB_AIN1, OUTPUT);
-  pinMode(PIN_TB_AIN2, OUTPUT);
-  pinMode(PIN_TB_PWMA, OUTPUT);
-  pinMode(PIN_TB_STBY, OUTPUT);
-  digitalWrite(PIN_TB_STBY, HIGH);   
-  motor_coast();                 
+    // --- Stepper timer ---
+    tmr = timerBegin(0, 80, true);         
+    timerAttachInterrupt(tmr, &onTimer, true);
+    timerAlarmWrite(tmr, HALF_PERIOD_US, true);
+    timerAlarmEnable(tmr);
 
-  ledcSetup(TB_PWM_CHANNEL, TB_PWM_FREQ, TB_PWM_RES);
-  ledcAttachPin(PIN_TB_PWMA, TB_PWM_CHANNEL);
-  ledcWrite(TB_PWM_CHANNEL, 0);
+    set_speed_rpm(90.0f);  
 
-  move_servo_angle(CH_GRIPPER, 0);
-  move_servo_angle(CH_DRIL_SERVO, 0);
-  move_servo_angle(CH_SW180, 0);
-}
+    // --- Attach servos ---
+    CH_GRIPPER    .servo.attach(CH_GRIPPER.pin,     CH_GRIPPER.min_us,     CH_GRIPPER.max_us);
+    CH_DRIL_SERVO .servo.attach(CH_DRIL_SERVO.pin,  CH_DRIL_SERVO.min_us,  CH_DRIL_SERVO.max_us);
+    CH_SW180      .servo.attach(CH_SW180.pin,       CH_SW180.min_us,       CH_SW180.max_us);
 
-void loop(){
-  switch(state){
-    case WAITING_AGENT:
-      EXECUTE_EVERY_N_MS(500,
-        state = (RMW_RET_OK==rmw_uros_ping_agent(100,1)) ? AGENT_AVAILABLE : WAITING_AGENT;
-      );
-      break;
+    // --- TB6612 pins & PWM ---
+    pinMode(PIN_TB_AIN1, OUTPUT);
+    pinMode(PIN_TB_AIN2, OUTPUT);
+    pinMode(PIN_TB_PWMA, OUTPUT);
+    pinMode(PIN_TB_STBY, OUTPUT);
+    digitalWrite(PIN_TB_STBY, HIGH);   
+    motor_coast();                 
 
-    case AGENT_AVAILABLE:
-      state = createEntities() ? AGENT_CONNECTED : WAITING_AGENT;
-      if(state == WAITING_AGENT) destroyEntities();
-      break;
+    ledcSetup(TB_PWM_CHANNEL, TB_PWM_FREQ, TB_PWM_RES);
+    ledcAttachPin(PIN_TB_PWMA, TB_PWM_CHANNEL);
+    ledcWrite(TB_PWM_CHANNEL, 0);
 
-    case AGENT_CONNECTED:
-      EXECUTE_EVERY_N_MS(200,
-        state = (RMW_RET_OK==rmw_uros_ping_agent(100,1)) ? AGENT_CONNECTED : AGENT_DISCONNECTED;
-      );
-      if(state == AGENT_CONNECTED){
-        rclc_executor_spin_some(&executor, RCL_MS_TO_NS(100));
+    move_servo_angle(CH_GRIPPER, 0);
+    move_servo_angle(CH_DRIL_SERVO, 0);
+    move_servo_angle(CH_SW180, 0);
+  }
 
-        uint32_t now = millis();
-        
-        // --- Heartbeats: Servos & Motors ---
-        if(CH_GRIPPER.last_angle != -1 && (now - CH_GRIPPER.last_hb_ms) >= 300){
-          publish_fb_servo(CH_GRIPPER, CH_GRIPPER.last_angle);
-          CH_GRIPPER.last_hb_ms = now;
+  void loop(){
+    switch(state){
+      case WAITING_AGENT:
+        EXECUTE_EVERY_N_MS(500,
+          state = (RMW_RET_OK==rmw_uros_ping_agent(100,1)) ? AGENT_AVAILABLE : WAITING_AGENT;
+        );
+        break;
+
+      case AGENT_AVAILABLE:
+        state = createEntities() ? AGENT_CONNECTED : WAITING_AGENT;
+        if(state == WAITING_AGENT) destroyEntities();
+        break;
+
+      case AGENT_CONNECTED:
+        EXECUTE_EVERY_N_MS(200,
+          state = (RMW_RET_OK==rmw_uros_ping_agent(100,1)) ? AGENT_CONNECTED : AGENT_DISCONNECTED;
+        );
+        if(state == AGENT_CONNECTED){
+          rclc_executor_spin_some(&executor, RCL_MS_TO_NS(100));
+
+          uint32_t now = millis();
+          
+          // --- Heartbeats: Servos & Motors ---
+          if(CH_GRIPPER.last_angle != -1 && (now - CH_GRIPPER.last_hb_ms) >= 300){
+            publish_fb_servo(CH_GRIPPER, CH_GRIPPER.last_angle);
+            CH_GRIPPER.last_hb_ms = now;
+          }
+          if(CH_DRIL_SERVO.last_angle != -1 && (now - CH_DRIL_SERVO.last_hb_ms) >= 300){
+            publish_fb_servo(CH_DRIL_SERVO, CH_DRIL_SERVO.last_angle);
+            CH_DRIL_SERVO.last_hb_ms = now;
+          }
+          if(CH_SW180.last_angle != -1 && (now - CH_SW180.last_hb_ms) >= 300){
+            publish_fb_servo(CH_SW180, CH_SW180.last_angle);
+            CH_SW180.last_hb_ms = now;
+          }
+          if((now - last_hb_ms_dril) >= 300){
+            publish_fb_dril_motor(last_cmd_percent);
+            last_hb_ms_dril = now;
+          }
+
+          // --- Heartbeats: Limit Switch Status ---
+          if((now - last_hb_ms_limit) >= 200){ // อัปเดตสถานะลิมิตสวิตช์ทุก 200ms
+            msg_limit_left.data = limit1_pressed();
+            msg_limit_right.data = limit2_pressed();
+            RCSOFTCHECK(rcl_publish(&pub_limit_left, &msg_limit_left, NULL));
+            RCSOFTCHECK(rcl_publish(&pub_limit_right, &msg_limit_right, NULL));
+            last_hb_ms_limit = now;
+          }
         }
-        if(CH_DRIL_SERVO.last_angle != -1 && (now - CH_DRIL_SERVO.last_hb_ms) >= 300){
-          publish_fb_servo(CH_DRIL_SERVO, CH_DRIL_SERVO.last_angle);
-          CH_DRIL_SERVO.last_hb_ms = now;
-        }
-        if(CH_SW180.last_angle != -1 && (now - CH_SW180.last_hb_ms) >= 300){
-          publish_fb_servo(CH_SW180, CH_SW180.last_angle);
-          CH_SW180.last_hb_ms = now;
-        }
-        if((now - last_hb_ms_dril) >= 300){
-          publish_fb_dril_motor(last_cmd_percent);
-          last_hb_ms_dril = now;
-        }
+        break;
 
-        // --- Heartbeats: Limit Switch Status ---
-        if((now - last_hb_ms_limit) >= 200){ // อัปเดตสถานะลิมิตสวิตช์ทุก 200ms
-          msg_limit_left.data = limit1_pressed();
-          msg_limit_right.data = limit2_pressed();
-          RCSOFTCHECK(rcl_publish(&pub_limit_left, &msg_limit_left, NULL));
-          RCSOFTCHECK(rcl_publish(&pub_limit_right, &msg_limit_right, NULL));
-          last_hb_ms_limit = now;
-        }
-      }
-      break;
+      case AGENT_DISCONNECTED:
+        destroyEntities();
+        stop_now_core();   
+        motor_coast();     
+        state = WAITING_AGENT;
+        break;
+    }
 
-    case AGENT_DISCONNECTED:
-      destroyEntities();
-      stop_now_core();   
-      motor_coast();     
-      state = WAITING_AGENT;
-      break;
+    // ---- Post-ISR: handle limit hit ----
+    if (limit_hit_flag) {
+      limit_hit_flag = false;
+      stop_now_core();
+      fb_msg_linear.data = (limit_side >= 0) ? +2 : -2; // +2 = ชนขวา, -2 = ชนซ้าย
+      RCSOFTCHECK(rcl_publish(&pub_fb_linear, &fb_msg_linear, NULL));
+      Serial.printf("[LIMIT] Hit %s -> STOP\n", (limit_side >= 0) ? "RIGHT(+1)" : "LEFT(-1)");
+    }
   }
-
-  // ---- Post-ISR: handle limit hit ----
-  if (limit_hit_flag) {
-    limit_hit_flag = false;
-    stop_now_core();
-    fb_msg_linear.data = (limit_side >= 0) ? +2 : -2; // +2 = ชนขวา, -2 = ชนซ้าย
-    RCSOFTCHECK(rcl_publish(&pub_fb_linear, &fb_msg_linear, NULL));
-    Serial.printf("[LIMIT] Hit %s -> STOP\n", (limit_side >= 0) ? "RIGHT(+1)" : "LEFT(-1)");
-  }
-}

@@ -63,8 +63,8 @@
     #define Encoder_LF_B 42
     #define ENCODER_INV_LF true
 
-    #define Encoder_RF_A 11
-    #define Encoder_RF_B 12
+    #define Encoder_RF_A 32
+    #define Encoder_RF_B 33
     #define ENCODER_INV_RF true
 
     #define Encoder_LB_A 2
@@ -90,9 +90,12 @@
     #define STP_CMD_DEBOUNCE_MS 120
     #define STP_CMD_MIN_DELTA_DEG 2
     #define STP_CMD_DEADBAND_TO_TARGET_DEG 1
-    // ================= Servo Config =================
-    
-    #define PIN_SERVO_CAM 15  // TODO: เว้นไว้ก่อนรอเปลี่ยนเลขพิน
+
+    #define CLK_L 20
+    #define DT_L  21
+    #define CLK_R 47
+    #define DT_R  48
+
 
 
 #endif
