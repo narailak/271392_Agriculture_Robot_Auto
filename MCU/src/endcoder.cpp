@@ -24,16 +24,16 @@
 #define Encoder_LF_B  33
 
 // ===== Encoder Left Back =====
-#define Encoder_LB_A  32
-#define Encoder_LB_B  33
+#define Encoder_LB_A  
+#define Encoder_LB_B  
 
 // ===== Encoder Right Front =====
-#define Encoder_RF_A  32
-#define Encoder_RF_B  33
+#define Encoder_RF_A  
+#define Encoder_RF_B  
 
 // ===== Encoder Right Back =====
-#define Encoder_RB_A  32
-#define Encoder_RB_B  33
+#define Encoder_RB_A  
+#define Encoder_RB_B  
 
 // ===== Encoder Parameters =====
 #define COUNTS_PER_REV   2048

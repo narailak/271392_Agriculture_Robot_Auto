@@ -186,7 +186,7 @@ CTRL+C : EXIT
             # ========= SERVO DRIL =========
             if k == 'j' and self.debounce("servo_dril"):
                 self.servo_dril_on = not self.servo_dril_on
-                val = 125 if self.servo_dril_on else 25
+                val = 115 if self.servo_dril_on else 25
                 self.pub_servo_dril.publish(Int16(data=val))
 
             # ========= SERVO SWITCH =========

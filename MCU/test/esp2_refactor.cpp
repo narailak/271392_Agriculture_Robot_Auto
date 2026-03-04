@@ -257,8 +257,8 @@
     RCCHECK(rclc_publisher_init_best_effort(&CH_SW180.pub,&node,ROSIDL_GET_MSG_TYPE_SUPPORT(std_msgs,msg,Int16),CH_SW180.pub_topic));
     RCCHECK(rclc_publisher_init_best_effort(&pub_fb_linear,&node,ROSIDL_GET_MSG_TYPE_SUPPORT(std_msgs,msg,Int16),"/tao/cmd_linear/fb"));
     RCCHECK(rclc_publisher_init_best_effort(&pub_fb_dril_motor,&node,ROSIDL_GET_MSG_TYPE_SUPPORT(std_msgs,msg,Int16),"/tao/cmd_motor_dril/fb"));
-    RCCHECK(rclc_publisher_init_best_effort(&pub_limit_left, &node, ROSIDL_GET_MSG_TYPE_SUPPORT(std_msgs, msg, Bool), "/tao/fb/limit_left"));
-    RCCHECK(rclc_publisher_init_best_effort(&pub_limit_right, &node, ROSIDL_GET_MSG_TYPE_SUPPORT(std_msgs, msg, Bool), "/tao/fb/limit_right"));
+    RCCHECK(rclc_publisher_init_best_effort(&pub_limit_left, &node, ROSIDL_GET_MSG_TYPE_SUPPORT(std_msgs, msg, Bool), "/tao/fb/limit_down"));
+    RCCHECK(rclc_publisher_init_best_effort(&pub_limit_right, &node, ROSIDL_GET_MSG_TYPE_SUPPORT(std_msgs, msg, Bool), "/tao/fb/limit_up"));
 
     // --- Subs ---
     RCCHECK(rclc_subscription_init_default(&CH_GRIPPER.sub,&node,ROSIDL_GET_MSG_TYPE_SUPPORT(std_msgs,msg,Int16),CH_GRIPPER.sub_topic));
