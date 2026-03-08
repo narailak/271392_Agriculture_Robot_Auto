@@ -17,7 +17,7 @@ class GardenYoloSegNode(Node):
         # ===== โหลดโมเดล Segmentation =====
         # ข้อควรระวัง: ต้องแน่ใจว่าไฟล์โมเดลที่เทรนมาเป็นแบบ Segmentation (มักจะลงท้ายด้วย -seg.pt)
         self.model = YOLO(
-            "/home/aorus-ubun/CMU/P.3/P.3-T.2/271392_Agriculture_Robot_Auto/ros_ws/src/cabbage_detection/models/garden_yolov8n-seg_200.pt"
+            "/home/aorus-ubun/CMU/P.3/P.3-T.2/271392_Agriculture_Robot_Auto/ros_ws/src/cabbage_detection/models/cabbage_plot_segV1.pt"
         )
 
         self.bridge = CvBridge()

@@ -69,12 +69,12 @@ class FarmingAprilTagNode(Node):
         self.kp_linear = 0.2   
         self.kp_angular = 2.0  
         self.max_linear_speed = 0.3  
-        self.max_angular_speed = 0.5  
+        self.max_angular_speed = 4.5  
 
         # ==========================================
         # 4. Servo Control Parameters
         # ==========================================
-        self.servo_angle = 70       
+        self.servo_angle = 100       
         self.sweep_step = 5         
         self.track_step = 5         
         self.servo_dir = 1          
