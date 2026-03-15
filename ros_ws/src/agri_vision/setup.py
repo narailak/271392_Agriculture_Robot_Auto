@@ -1,6 +1,6 @@
 from setuptools import find_packages, setup
 
-package_name = 'agri_control'
+package_name = 'agri_vision'
 
 setup(
     name=package_name,
@@ -24,11 +24,11 @@ setup(
     },
     entry_points={
         'console_scripts': [
-            'joy_mapper = agri_control.joy_mapper:main',
-            'mode_mux = agri_control.mode_mux:main',
-            'teleop_keyboard = agri_control.teleop_keyboard:main',
-            'pid_controller_node = agri_control.pid_controller_node:main',
-            'odometry_node = agri_control.odometry_node:main',
+            'apriltag_node = agri_vision.apriltag_node:main',
+            'auto_front_plot = agri_vision.auto_front_plot:main',
+            'measurement_node = agri_vision.measurement_node:main',
+            'auto_front_seg = agri_vision.auto_front_seg:main', 
+            'camera_publisher_node = agri_vision.camera_publisher_node:main',
         ],
     },
 )

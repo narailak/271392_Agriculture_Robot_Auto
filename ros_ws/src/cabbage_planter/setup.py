@@ -24,6 +24,7 @@ setup(
     },
     entry_points={
         'console_scripts': [
+            'auto_planter_node = cabbage_planter.auto_planter:main',
         ],
     },
 )

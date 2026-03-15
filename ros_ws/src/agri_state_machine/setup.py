@@ -1,6 +1,6 @@
 from setuptools import find_packages, setup
 
-package_name = 'agri_control'
+package_name = 'agri_state_machine'
 
 setup(
     name=package_name,
@@ -24,11 +24,7 @@ setup(
     },
     entry_points={
         'console_scripts': [
-            'joy_mapper = agri_control.joy_mapper:main',
-            'mode_mux = agri_control.mode_mux:main',
-            'teleop_keyboard = agri_control.teleop_keyboard:main',
-            'pid_controller_node = agri_control.pid_controller_node:main',
-            'odometry_node = agri_control.odometry_node:main',
-        ],
+            'state_machine_node = agri_state_machine.agri_state_machine:main',        
+            ],
     },
 )

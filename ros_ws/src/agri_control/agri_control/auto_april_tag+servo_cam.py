@@ -29,7 +29,7 @@ class FarmingAprilTagNode(Node):
         self.servo_pub = self.create_publisher(Int16, '/tao/cmd_servo_cam', 10) 
 
         # ==========================================
-        # 2. AprilTag Setup
+        # 2. AprilTag Setup (อัปเดตพารามิเตอร์กล้องใหม่)
         # ==========================================
         self.detector = Detector(
             families="tagStandard52h13",
@@ -39,14 +39,15 @@ class FarmingAprilTagNode(Node):
             refine_edges=True
         )
 
-        self.camera_params = [896.35, 895.53, 377.15, 224.76] 
+        # อัปเดตค่าที่ได้จากการ Calibrate
+        self.camera_params = [942.01, 945.76, 445.51, 233.71] 
         self.camera_matrix = np.array([
-            [896.34636732, 0.0, 377.14536611],
-            [0.0, 895.52629524, 224.76348467],
+            [942.00959306, 0.0, 445.50898168],
+            [0.0, 945.76258164, 233.70507804],
             [0.0, 0.0, 1.0]
         ])
         self.dist_coeffs = np.array([
-            [-4.33837502e-01, 9.89145910e-01, 2.32584268e-03, 2.38533357e-03, -3.81535553e+00]
+            [-0.41678417, 0.26653241, 0.00208138, -0.00701684, -0.14829814]
         ])
 
         self.tag_size = 0.053
@@ -55,20 +56,18 @@ class FarmingAprilTagNode(Node):
         # 3. Kinematics & DISTANCE CALIBRATION
         # ==========================================
         self.camera_to_front_dist = 0.20  
-        self.front_to_bed_stop_dist = 0.10 
+        self.front_to_bed_stop_dist = 0.30 
         
         self.target_distance = self.camera_to_front_dist + self.front_to_bed_stop_dist
 
         # ---------------------------------------------------------
-        # [เพิ่มใหม่] ตั้งค่าการเยื้องศูนย์ (X-Offset)
-        # แปลงกว้าง 15cm ป้ายอยู่ขวา ดังนั้นหุ่นต้องเล็งไปทางซ้ายของป้าย 7.5cm (0.075m)
-        # ทำให้เมื่อมองจากหุ่น ป้ายจะต้องอยู่ทาง "ขวา" ของกล้องที่ระยะ 0.075m
+        # ตั้งค่าการเยื้องศูนย์ (X-Offset)
         # ---------------------------------------------------------
-        self.bed_offset_x = 0.075  # ค่าบวก = ป้ายอยู่ขวาหุ่น, ค่าลบ = ป้ายอยู่ซ้ายหุ่น
+        self.bed_offset_x = 0.075  
 
-        self.kp_linear = 0.2   
+        self.kp_linear = 0.6   
         self.kp_angular = 2.0  
-        self.max_linear_speed = 0.3  
+        self.max_linear_speed = 0.8 
         self.max_angular_speed = 4.5  
 
         # ==========================================
@@ -83,7 +82,7 @@ class FarmingAprilTagNode(Node):
         self.lost_frames = 0        
 
         self.publish_servo(self.servo_angle)
-        self.get_logger().info("Farming AprilTag Node Started (With X-Offset)...")
+        self.get_logger().info("Farming AprilTag Node Started (With Updated Camera Params)...")
 
     def decode_tag(self, tag_id):
         tag_str = str(tag_id).zfill(5)
@@ -171,17 +170,16 @@ class FarmingAprilTagNode(Node):
                 cv2.putText(frame_undistorted, calib_text, (20, 110), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 165, 255), 2)
 
                 # =========================================================
-                # เงื่อนไขการเข้าเป้าหมาย (ใช้ x_error แทน tx ตัวเดิม)
+                # เงื่อนไขการเข้าเป้าหมาย
                 # =========================================================
                 is_y_centered = abs(error_y) < 50
                 distance_error = tz - self.target_distance
                 is_distance_reached = abs(distance_error) < 0.05
                 
-                # คำนวณ error แกน X โดยเอาออฟเซ็ตมาลบออก
                 x_error = tx - self.bed_offset_x
                 is_x_aligned = abs(x_error) < 0.02
 
-                # --- ควบคุมการเลี้ยว (แกน X) แก้ไขใหม่ให้คำนวณจาก x_error ---
+                # --- ควบคุมการเลี้ยว (แกน X) ---
                 angular_z = -self.kp_angular * x_error
                 angular_z = max(-self.max_angular_speed, min(self.max_angular_speed, angular_z))
                 if is_x_aligned:

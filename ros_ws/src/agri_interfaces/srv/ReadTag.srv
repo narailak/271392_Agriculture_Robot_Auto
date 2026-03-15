@@ -1,0 +1,8 @@
+# Request (ปล่อยว่างไว้ เพราะแค่สะกิดให้กล้องทำงาน ไม่ต้องส่งพารามิเตอร์ไป)
+---
+# Response (สิ่งที่กล้องจะตอบกลับมาให้ State Machine)
+bool success
+int32 tag_id
+float32 plant_dist
+float32 gap_dist
+float32 interval_dist

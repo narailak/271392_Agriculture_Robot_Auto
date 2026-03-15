@@ -70,6 +70,7 @@ const float DEADBAND     = 0.02f;
 const float SLEW_RPM_PER_SEC = 200.0f;
 const uint32_t CMD_TIMEOUT_MS = 300;
 
+// ROS Entities (DC)
 rcl_publisher_t debug_motor_pub;
 std_msgs__msg__Float32MultiArray debug_motor_msg;
 rcl_subscription_t cmd_sub;
@@ -114,6 +115,7 @@ std_msgs__msg__Int16 stp_fb_msg;
 #define SERVO_MAX_DEG   180
 
 Servo cam_servo;
+
 rcl_subscription_t   sub_cmd_cam;
 std_msgs__msg__Int16 cmd_msg_cam;
 rcl_publisher_t      pub_fb_cam;
@@ -129,6 +131,8 @@ static inline int cam_clamp(int angle){
 }
 static inline int cam_angle_to_us(int angle){
   long us = (long)SERVO_MIN_US + (long)angle * (SERVO_MAX_US - SERVO_MIN_US) / SERVO_MAX_DEG;
+  if(us < SERVO_MIN_US) us = SERVO_MIN_US;
+  if(us > SERVO_MAX_US) us = SERVO_MAX_US;
   return (int)us;
 }
 static inline void cam_publish_fb(int16_t angle){
@@ -146,6 +150,7 @@ static void sub_cb_cam(const void* msgin){
 // ============================================================================
 //                            WHEEL ENCODERS
 // ============================================================================
+// --- Wheel Encoder Pins & Settings ---
 #define Encoder_LF_A 41
 #define Encoder_LF_B 42
 #define Encoder_LB_A 21
@@ -170,21 +175,36 @@ esp32_Encoder encRB(Encoder_RB_A, Encoder_RB_B, COUNTS_PER_REV, ENCODER_INV_RB, 
 
 long offsetLF = 0, offsetLB = 0, offsetRF = 0, offsetRB = 0;
 
+// ROS Entities (Encoder Wheels)
 rcl_publisher_t debug_encoder_wheels_publisher;
 std_msgs__msg__Float32MultiArray debug_encoder_wheels_msg;
+
 rcl_subscription_t cmd_resetencoder_subscriber;
 geometry_msgs__msg__Twist cmd_resetencoder_msg;
 
+// --- Encoder Functions ---
 void getEncoderWheelsTick() {
-    debug_encoder_wheels_msg.data.data[0] = encLF.read() - offsetLF;
-    debug_encoder_wheels_msg.data.data[1] = encLB.read() - offsetLB;
-    debug_encoder_wheels_msg.data.data[2] = encRF.read() - offsetRF;
-    debug_encoder_wheels_msg.data.data[3] = encRB.read() - offsetRB;
+    long curLF = encLF.read();
+    long curLB = encLB.read();
+    long curRF = encRF.read();
+    long curRB = encRB.read();
+
+    debug_encoder_wheels_msg.data.data[0] = curLF - offsetLF;
+    debug_encoder_wheels_msg.data.data[1] = curLB - offsetLB;
+    debug_encoder_wheels_msg.data.data[2] = curRF - offsetRF;
+    debug_encoder_wheels_msg.data.data[3] = curRB - offsetRB;
 }
 
 void resetEncoderOffset() {
-    offsetLF = encLF.read(); offsetLB = encLB.read();
-    offsetRF = encRF.read(); offsetRB = encRB.read();
+    offsetLF = encLF.read();
+    offsetLB = encLB.read();
+    offsetRF = encRF.read();
+    offsetRB = encRB.read();
+
+    debug_encoder_wheels_msg.data.data[0] = 0;
+    debug_encoder_wheels_msg.data.data[1] = 0;
+    debug_encoder_wheels_msg.data.data[2] = 0;
+    debug_encoder_wheels_msg.data.data[3] = 0;
 }
 
 // ============================================================================
@@ -235,11 +255,7 @@ void controlTimerCb(rcl_timer_t* timer, int64_t last_call_time) {
     RCSOFTCHECK(rcl_publish(&debug_motor_pub, &debug_motor_msg, NULL));
     RCSOFTCHECK(rcl_publish(&debug_encoder_wheels_publisher, &debug_encoder_wheels_msg, NULL));
 
-    // Update Stepper FB & Cam FB
-    stp_fb_msg.data = (int16_t)((stp_current_steps % STEPS_PER_REV) * 360 / STEPS_PER_REV);
-    if(stp_fb_msg.data < 0) stp_fb_msg.data += 360;
-    RCSOFTCHECK(rcl_publish(&stp_pub_fb, &stp_fb_msg, NULL));
-
+    // Cam Servo Heartbeat (ทุก 300ms)
     uint32_t now = millis();
     if((now - cam_last_hb_ms) >= 300){
         cam_publish_fb(cam_last_angle);
@@ -254,6 +270,7 @@ void twistCb(const void *msgin) {
     drive_last_cmd_ms = millis();
 }
 
+// Stepper Timer ISR
 void IRAM_ATTR stp_onTimer(){
     if (STP_RUN_DIR == 0 || stp_steps_remaining <= 0) return;
     static bool high = false;
@@ -275,7 +292,7 @@ void stp_cmd_cb(const void* msgin){
     if (delta < -(STEPS_PER_REV/2)) delta += STEPS_PER_REV;
     if(delta == 0) return;
     digitalWrite(PIN_DIR, (delta > 0) ? LOW : HIGH);
-    digitalWrite(PIN_ENA, LOW); 
+    digitalWrite(PIN_ENA, LOW);
     portENTER_CRITICAL(&stp_spinlock);
     STP_RUN_DIR = (delta > 0) ? 1 : -1;
     stp_steps_remaining = abs(delta);
@@ -293,33 +310,47 @@ bool createEntities(){
     RCCHECK(rclc_support_init_with_options(&support, 0, NULL, &init_options, &allocator));
     RCCHECK(rclc_node_init_default(&node, "esp32_robot_node", "", &support));
 
+    // Malloc dynamic arrays
     debug_motor_msg.data.capacity = 4; debug_motor_msg.data.size = 4;
     debug_motor_msg.data.data = (float*)malloc(4*sizeof(float));
     debug_encoder_wheels_msg.data.capacity = 4; debug_encoder_wheels_msg.data.size = 4;
     debug_encoder_wheels_msg.data.data = (float*)malloc(4*sizeof(float));
 
-    RCCHECK(rclc_publisher_init_best_effort(&debug_motor_pub, &node, ROSIDL_GET_MSG_TYPE_SUPPORT(std_msgs, msg, Float32MultiArray), "/motor_debug/duty"));
-    RCCHECK(rclc_publisher_init_best_effort(&stp_pub_fb, &node, ROSIDL_GET_MSG_TYPE_SUPPORT(std_msgs, msg, Int16), "/tao/cmd_step_load/fb"));
-    RCCHECK(rclc_publisher_init_default(&debug_encoder_wheels_publisher, &node, ROSIDL_GET_MSG_TYPE_SUPPORT(std_msgs, msg, Float32MultiArray), "teelek/debug/encoder_wheels"));
-    RCCHECK(rclc_publisher_init_best_effort(&pub_fb_cam, &node, ROSIDL_GET_MSG_TYPE_SUPPORT(std_msgs, msg, Int16), "/tao/cmd_servo_cam/rpm"));
+    // --- Publishers ---
+    RCCHECK(rclc_publisher_init_best_effort(&debug_motor_pub, &node,
+        ROSIDL_GET_MSG_TYPE_SUPPORT(std_msgs, msg, Float32MultiArray), "/motor_debug/duty"));
+    RCCHECK(rclc_publisher_init_best_effort(&stp_pub_fb, &node,
+        ROSIDL_GET_MSG_TYPE_SUPPORT(std_msgs, msg, Int16), "/tao/cmd_step_load/fb"));
+    RCCHECK(rclc_publisher_init_default(&debug_encoder_wheels_publisher, &node,
+        ROSIDL_GET_MSG_TYPE_SUPPORT(std_msgs, msg, Float32MultiArray), "teelek/debug/encoder_wheels"));
+    RCCHECK(rclc_publisher_init_best_effort(&pub_fb_cam, &node,
+        ROSIDL_GET_MSG_TYPE_SUPPORT(std_msgs, msg, Int16), "/tao/cmd_servo_cam/rpm"));
 
-    RCCHECK(rclc_subscription_init_default(&cmd_sub, &node, ROSIDL_GET_MSG_TYPE_SUPPORT(geometry_msgs, msg, Twist), "/tao/cmd_vel"));
-    RCCHECK(rclc_subscription_init_default(&stp_sub_cmd, &node, ROSIDL_GET_MSG_TYPE_SUPPORT(std_msgs, msg, Int16), "/tao/cmd_step_load"));
-    RCCHECK(rclc_subscription_init_default(&cmd_resetencoder_subscriber, &node, ROSIDL_GET_MSG_TYPE_SUPPORT(geometry_msgs, msg, Twist), "/teelek/cmd_resetencoder"));
-    RCCHECK(rclc_subscription_init_default(&sub_cmd_cam, &node, ROSIDL_GET_MSG_TYPE_SUPPORT(std_msgs, msg, Int16), "/tao/cmd_servo_cam"));
+    // --- Subscribers ---
+    RCCHECK(rclc_subscription_init_default(&cmd_sub, &node,
+        ROSIDL_GET_MSG_TYPE_SUPPORT(geometry_msgs, msg, Twist), "/tao/cmd_vel"));
+    RCCHECK(rclc_subscription_init_default(&stp_sub_cmd, &node,
+        ROSIDL_GET_MSG_TYPE_SUPPORT(std_msgs, msg, Int16), "/tao/cmd_step_load"));
+    RCCHECK(rclc_subscription_init_default(&cmd_resetencoder_subscriber, &node,
+        ROSIDL_GET_MSG_TYPE_SUPPORT(geometry_msgs, msg, Twist), "/teelek/cmd_resetencoder"));
+    RCCHECK(rclc_subscription_init_default(&sub_cmd_cam, &node,
+        ROSIDL_GET_MSG_TYPE_SUPPORT(std_msgs, msg, Int16), "/tao/cmd_servo_cam"));
 
+    // --- Timer ---
     RCCHECK(rclc_timer_init_default(&control_timer, &support, RCL_MS_TO_NS(20), controlTimerCb));
 
+    // --- Executor (5 entities: 4 subs + 1 timer) ---
     RCCHECK(rclc_executor_init(&executor, &support.context, 5, &allocator));
-    RCCHECK(rclc_executor_add_subscription(&executor, &cmd_sub, &cmd_msg, &twistCb, ON_NEW_DATA));
-    RCCHECK(rclc_executor_add_subscription(&executor, &stp_sub_cmd, &stp_cmd_msg, &stp_cmd_cb, ON_NEW_DATA));
-    RCCHECK(rclc_executor_add_subscription(&executor, &cmd_resetencoder_subscriber, &cmd_resetencoder_msg, &cmd_reset_encoder_callback, ON_NEW_DATA));
-    RCCHECK(rclc_executor_add_subscription(&executor, &sub_cmd_cam, &cmd_msg_cam, &sub_cb_cam, ON_NEW_DATA)); 
+    RCCHECK(rclc_executor_add_subscription(&executor, &cmd_sub,                    &cmd_msg,              &twistCb,                      ON_NEW_DATA));
+    RCCHECK(rclc_executor_add_subscription(&executor, &stp_sub_cmd,               &stp_cmd_msg,          &stp_cmd_cb,                   ON_NEW_DATA));
+    RCCHECK(rclc_executor_add_subscription(&executor, &cmd_resetencoder_subscriber,&cmd_resetencoder_msg, &cmd_reset_encoder_callback,   ON_NEW_DATA));
+    RCCHECK(rclc_executor_add_subscription(&executor, &sub_cmd_cam,               &cmd_msg_cam,          &sub_cb_cam,                   ON_NEW_DATA)); 
     RCCHECK(rclc_executor_add_timer(&executor, &control_timer));
 
-    // ส่งค่า 0 ออกไปครั้งแรกหลังต่อสำเร็จ
-    stp_fb_msg.data = 0;
-    RCSOFTCHECK(rcl_publish(&stp_pub_fb, &stp_fb_msg, NULL));
+    // --- Init cam servo state ---
+    cam_last_angle = 0;
+    cam_servo.writeMicroseconds(cam_angle_to_us(0));
+    cam_publish_fb(0);
 
     return true;
 }
@@ -331,9 +362,15 @@ void setup(){
     Serial.begin(115200);
     set_microros_serial_transports(Serial);
 
+    // ==========================================
+    // 1. จัดสรร Hardware Timer 2 ให้ Servo แยกออกมา
+    // ==========================================
     ESP32PWM::allocateTimer(2);
     cam_servo.setPeriodHertz(50); 
 
+    // ==========================================
+    // 2. DC Motor Pins (ledc จะจัดการ Timer 0 และ 1 เอง)
+    // ==========================================
     pinMode(L_DIR1, OUTPUT); pinMode(R_DIR1, OUTPUT);
     pinMode(L_DIR2, OUTPUT); pinMode(R_DIR2, OUTPUT);
     ledcSetup(PWM_CH_M1, PWM_FREQ, PWM_RESOLUTION); ledcAttachPin(L_PWM1, PWM_CH_M1);
@@ -341,18 +378,20 @@ void setup(){
     ledcSetup(PWM_CH_M3, PWM_FREQ, PWM_RESOLUTION); ledcAttachPin(L_PWM2, PWM_CH_M3);
     ledcSetup(PWM_CH_M4, PWM_FREQ, PWM_RESOLUTION); ledcAttachPin(R_PWM2, PWM_CH_M4);
 
-    // --- Stepper Setup: Start at 0 degree ---
+    // ==========================================
+    // 3. Stepper Pins (เปลี่ยนไปใช้ Timer 3)
+    // ==========================================
     pinMode(PIN_PUL, OUTPUT); pinMode(PIN_DIR, OUTPUT); pinMode(PIN_ENA, OUTPUT);
-    digitalWrite(PIN_ENA, LOW); // Enable motor (Locked at 0 degree)
-    stp_current_steps = 0;      // Set initial software position to 0
-    STP_RUN_DIR = 0;
-    stp_steps_remaining = 0;
+    digitalWrite(PIN_ENA, HIGH);
     
     stp_tmr = timerBegin(3, 80, true); 
     timerAttachInterrupt(stp_tmr, &stp_onTimer, true);
     timerAlarmWrite(stp_tmr, HALF_PERIOD_US, true);
     timerAlarmEnable(stp_tmr);
 
+    // ==========================================
+    // 4. เริ่มทำงาน Servo
+    // ==========================================
     cam_servo.attach(PIN_SERVO_CAM, SERVO_MIN_US, SERVO_MAX_US);
     cam_servo.writeMicroseconds(cam_angle_to_us(0));
 }
