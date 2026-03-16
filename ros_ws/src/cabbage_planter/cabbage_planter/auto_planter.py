@@ -167,7 +167,7 @@ class AutoPlanterServiceNode(Node):
                 self.auto_timer = current_time
                 self.auto_state = 14
         elif self.auto_state == 14:
-            if current_time - self.auto_timer < .0:
+            if current_time - self.auto_timer < 7.0:
                 lin.data = -1
             else:
                 lin.data = 0
@@ -175,12 +175,12 @@ class AutoPlanterServiceNode(Node):
                 self.auto_timer = current_time 
                 self.auto_state = 15
 
-        # --- Step 15-20: บีบปล่อย Gripper 3 รอบ ---
+# --- Step 15-20: บีบปล่อย Gripper 3 รอบ ---
         elif self.auto_state == 15: 
-            if current_time - self.auto_timer < 2.0:
-                lin.data = -1
+            if not self.limit_down_state:     # ถ้ายังไม่เจอ Limit DOWN
+                lin.data = -1                 # สั่งดันลงต่อไปเรื่อยๆ
             else:
-                lin.data = 0
+                lin.data = 0                  # ชนแล้ว สั่งหยุด
                 self.pub_gripper.publish(Int16(data=20)) 
                 self.auto_timer = current_time
                 self.auto_state = 16

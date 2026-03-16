@@ -3,7 +3,7 @@ import matplotlib.pyplot as plt
 
 # 1. โหลดข้อมูลจากไฟล์ CSV
 # ถ้าคุณบันทึกเป็นชื่ออื่น อย่าลืมแก้ชื่อไฟล์ตรงนี้นะครับ
-df = pd.read_csv('/home/aorus-ubun/CMU/P.3/P.3-T.2/271392_Agriculture_Robot_Auto/agri_log/pid_log_20260315_151059.csv')
+df = pd.read_csv('/home/aorus-ubun/CMU/P.3/P.3-T.2/271392_Agriculture_Robot_Auto/agri_log/pid_log_20260316_104758.csv')
 
 # 2. ตั้งค่าขนาดของกราฟ
 plt.figure(figsize=(12, 6))

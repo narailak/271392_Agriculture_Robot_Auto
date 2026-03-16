@@ -29,6 +29,7 @@ setup(
             'teleop_keyboard = agri_control.teleop_keyboard:main',
             'pid_controller_node = agri_control.pid_controller_node:main',
             'odometry_node = agri_control.odometry_node:main',
+            'final_april_tag_node = agri_control.final_april_tag_node:main',
         ],
     },
 )
