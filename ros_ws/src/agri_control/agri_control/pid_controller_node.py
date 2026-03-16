@@ -15,12 +15,12 @@ class PidControllerNode(Node):
         super().__init__('pid_controller_node')
 
         # ================= 1. Scaling & Physical Parameters =================
-        self.target_multiplier = 6    
-        self.angular_multiplier = 10.0   
-        self.max_acceleration = 1.0     
+        self.target_multiplier = 6 
+        self.angular_multiplier = 20.0   
+        self.max_acceleration = 4.0     
         self.wheel_separation = 0.3     
         self.max_velocity = 7.8       
-        self.min_pwm = 15               
+        self.min_pwm = 20               
         self.kf = (255 - self.min_pwm) / self.max_velocity 
         
         # PID Gains

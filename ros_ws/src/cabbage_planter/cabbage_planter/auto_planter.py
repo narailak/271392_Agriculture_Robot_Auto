@@ -73,7 +73,7 @@ class AutoPlanterServiceNode(Node):
             else:
                 lin.data = 0
                 self.pub_servo_dril.publish(Int16(data=7))
-                self.pub_gripper.publish(Int16(data=25))
+                self.pub_gripper.publish(Int16(data=20))
                 
                 # 🌟 ส่ง 0 องศา "เฉพาะตอนที่มันคือช่องที่ 1" เท่านั้น! 🌟
                 if self.auto_step_index == 1:
@@ -133,9 +133,9 @@ class AutoPlanterServiceNode(Node):
                 self.auto_timer = current_time
                 self.auto_state = 9
                 
-        # --- Step 9: ดันขึ้น 7 วินาที ---
+        # --- Step 9: ดันขึ้น 10 วินาที ---
         elif self.auto_state == 9:
-            if current_time - self.auto_timer < 7.0:
+            if current_time - self.auto_timer < 10.0:
                 lin.data = 1
             else:
                 lin.data = 0
@@ -167,7 +167,7 @@ class AutoPlanterServiceNode(Node):
                 self.auto_timer = current_time
                 self.auto_state = 14
         elif self.auto_state == 14:
-            if current_time - self.auto_timer < 5.0:
+            if current_time - self.auto_timer < .0:
                 lin.data = -1
             else:
                 lin.data = 0
@@ -181,7 +181,7 @@ class AutoPlanterServiceNode(Node):
                 lin.data = -1
             else:
                 lin.data = 0
-                self.pub_gripper.publish(Int16(data=25)) 
+                self.pub_gripper.publish(Int16(data=20)) 
                 self.auto_timer = current_time
                 self.auto_state = 16
         elif self.auto_state == 16:
@@ -191,7 +191,7 @@ class AutoPlanterServiceNode(Node):
                 self.auto_state = 17
         elif self.auto_state == 17:
             if current_time - self.auto_timer >= 1.5:
-                self.pub_gripper.publish(Int16(data=25)) 
+                self.pub_gripper.publish(Int16(data=20)) 
                 self.auto_timer = current_time
                 self.auto_state = 18
         elif self.auto_state == 18:
@@ -201,7 +201,7 @@ class AutoPlanterServiceNode(Node):
                 self.auto_state = 19
         elif self.auto_state == 19:
             if current_time - self.auto_timer >= 1.5:
-                self.pub_gripper.publish(Int16(data=25)) 
+                self.pub_gripper.publish(Int16(data=20)) 
                 self.auto_timer = current_time
                 self.auto_state = 20
         elif self.auto_state == 20:
@@ -217,7 +217,7 @@ class AutoPlanterServiceNode(Node):
             else:
                 lin.data = 0
                 self.pub_servo_dril.publish(Int16(data=7))
-                self.pub_gripper.publish(Int16(data=25)) 
+                self.pub_gripper.publish(Int16(data=20)) 
                 self.auto_timer = current_time
                 self.auto_state = 22
                 

@@ -180,7 +180,7 @@ CTRL+C : EXIT
             # ========= GRIPPER =========
             if k == 'g' and self.debounce("gripper"):
                 self.gripper_on = not self.gripper_on
-                val = 60 if self.gripper_on else 25
+                val = 60 if self.gripper_on else 20
                 self.pub_gripper.publish(Int16(data=val))
 
             # ========= SERVO DRIL =========

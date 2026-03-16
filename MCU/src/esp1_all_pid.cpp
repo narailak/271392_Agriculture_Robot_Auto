@@ -1,9 +1,11 @@
 // =========================== main.cpp (ESP32-S3 + micro-ROS)
-// - Differential drive (4 DC motors) via /tao/cmd_vel
+// - Differential drive (4 DC motors) via /tao/motor_pwm (Int32MultiArray)
+// - Encoder Feedback (Velocity m/s) via /tao/encoder_feedback (Float32MultiArray)
+// - Encoder Sum (Total Ticks) via /tao/encoder_sum (Int32MultiArray)
+// - Reset Encoder via /tao/reset_encoder (Twist, linear.x > 0.5)
 // - Stepper TB6600 absolute angle via /tao/cmd_step_load (Int16 0..359)
 // - Cam Servo via /tao/cmd_servo_cam (Int16 0..180)
 // - ROS_DOMAIN_ID = 96
-// - Included: 4 Wheel Encoders logic
 // ============================================================================
 
 #include <Arduino.h>
@@ -17,7 +19,7 @@
 #include <rclc/executor.h>
 
 #include <std_msgs/msg/float32_multi_array.h>
-#include <std_msgs/msg/int32.h>
+#include <std_msgs/msg/int32_multi_array.h>
 #include <std_msgs/msg/int16.h>
 #include <geometry_msgs/msg/twist.h>
 
@@ -47,40 +49,32 @@ static AgentState state = WAITING_AGENT;
 // ============================================================================
 //                               DC MOTORS
 // ============================================================================
-#define R_DIR1  20
-#define R_PWM1  19
-#define R_DIR2  36
-#define R_PWM2  37
-#define L_DIR1  13
+#define L_DIR1  13 // LF
 #define L_PWM1  14
-#define L_DIR2  8
+#define R_DIR1  20 // RF
+#define R_PWM1  19
+#define L_DIR2  8  // LB
 #define L_PWM2  7
+#define R_DIR2  36 // RB
+#define R_PWM2  37
 
 #define PWM_FREQ        20000
 #define PWM_RESOLUTION  8
-#define PWM_CH_M1 0
-#define PWM_CH_M2 1
-#define PWM_CH_M3 2
-#define PWM_CH_M4 3
+#define PWM_CH_M1 0 // LF
+#define PWM_CH_M2 1 // RF
+#define PWM_CH_M3 2 // LB
+#define PWM_CH_M4 3 // RB
 
-const float WHEEL_RADIUS = 0.045f;
-const float TRACK_WIDTH  = 0.300f;
-const float MAX_RPM      = 60.0f;
-const float DEADBAND     = 0.02f;
-const float SLEW_RPM_PER_SEC = 200.0f;
+const float WHEEL_DIAMETER = 0.09f;
 const uint32_t CMD_TIMEOUT_MS = 300;
 
-rcl_publisher_t debug_motor_pub;
-std_msgs__msg__Float32MultiArray debug_motor_msg;
-rcl_subscription_t cmd_sub;
-geometry_msgs__msg__Twist cmd_msg;
+// ROS Entities (DC)
+rcl_subscription_t pwm_sub;
+std_msgs__msg__Int32MultiArray pwm_msg;
 rcl_timer_t control_timer;
 
-volatile float cmd_vx = 0.0f;
-volatile float cmd_wz = 0.0f;
-volatile uint32_t drive_last_cmd_ms = 0;
-float m1_rpm=0, m2_rpm=0, m3_rpm=0, m4_rpm=0;
-float tgt_m1_rpm=0, tgt_m2_rpm=0, tgt_m3_rpm=0, tgt_m4_rpm=0;
+volatile int32_t target_pwm[4] = {0, 0, 0, 0};
+volatile uint32_t last_pwm_ms = 0;
 
 // ============================================================================
 //                                STEPPER (TB6600)
@@ -106,7 +100,7 @@ rcl_publisher_t      stp_pub_fb;
 std_msgs__msg__Int16 stp_fb_msg;
 
 // ============================================================================
-//                         CAM SERVO 
+//                          CAM SERVO 
 // ============================================================================
 #define PIN_SERVO_CAM   15  
 #define SERVO_MIN_US    500
@@ -114,6 +108,7 @@ std_msgs__msg__Int16 stp_fb_msg;
 #define SERVO_MAX_DEG   180
 
 Servo cam_servo;
+
 rcl_subscription_t   sub_cmd_cam;
 std_msgs__msg__Int16 cmd_msg_cam;
 rcl_publisher_t      pub_fb_cam;
@@ -129,6 +124,8 @@ static inline int cam_clamp(int angle){
 }
 static inline int cam_angle_to_us(int angle){
   long us = (long)SERVO_MIN_US + (long)angle * (SERVO_MAX_US - SERVO_MIN_US) / SERVO_MAX_DEG;
+  if(us < SERVO_MIN_US) us = SERVO_MIN_US;
+  if(us > SERVO_MAX_US) us = SERVO_MAX_US;
   return (int)us;
 }
 static inline void cam_publish_fb(int16_t angle){
@@ -148,79 +145,119 @@ static void sub_cb_cam(const void* msgin){
 // ============================================================================
 #define Encoder_LF_A 41
 #define Encoder_LF_B 42
-#define Encoder_LB_A 21
-#define Encoder_LB_B 38
-#define Encoder_RF_A 11
-#define Encoder_RF_B 12
-#define Encoder_RB_A 9
-#define Encoder_RB_B 10
+#define Encoder_LB_A 38
+#define Encoder_LB_B 21
+#define Encoder_RF_A 12
+#define Encoder_RF_B 11
+#define Encoder_RB_A 10
+#define Encoder_RB_B 9
 
 #define COUNTS_PER_REV 340
 #define GEAR_RATIO 1
-#define WHEEL_DIAMETER 0.09
 #define ENCODER_INV_LF false
 #define ENCODER_INV_LB false
 #define ENCODER_INV_RF false
 #define ENCODER_INV_RB false
 
 esp32_Encoder encLF(Encoder_LF_A, Encoder_LF_B, COUNTS_PER_REV, ENCODER_INV_LF, GEAR_RATIO, WHEEL_DIAMETER);
-esp32_Encoder encLB(Encoder_LB_A, Encoder_LB_B, COUNTS_PER_REV, ENCODER_INV_LB, GEAR_RATIO, WHEEL_DIAMETER);
 esp32_Encoder encRF(Encoder_RF_A, Encoder_RF_B, COUNTS_PER_REV, ENCODER_INV_RF, GEAR_RATIO, WHEEL_DIAMETER);
+esp32_Encoder encLB(Encoder_LB_A, Encoder_LB_B, COUNTS_PER_REV, ENCODER_INV_LB, GEAR_RATIO, WHEEL_DIAMETER);
 esp32_Encoder encRB(Encoder_RB_A, Encoder_RB_B, COUNTS_PER_REV, ENCODER_INV_RB, GEAR_RATIO, WHEEL_DIAMETER);
 
-long offsetLF = 0, offsetLB = 0, offsetRF = 0, offsetRB = 0;
+// ตัวแปรสำหรับคำนวณ m/s (PID)
+long last_tick[4] = {0, 0, 0, 0};
 
-rcl_publisher_t debug_encoder_wheels_publisher;
+// ตัวแปรสำหรับคำนวณ Ticks รวม (Odometry)
+long offsetLF = 0, offsetRF = 0, offsetLB = 0, offsetRB = 0;
+
+// ROS Entities (Encoder Wheels)
+rcl_publisher_t debug_encoder_wheels_publisher; 
 std_msgs__msg__Float32MultiArray debug_encoder_wheels_msg;
+
+rcl_publisher_t pub_encoder_sum; 
+std_msgs__msg__Int32MultiArray msg_encoder_sum;
+
 rcl_subscription_t cmd_resetencoder_subscriber;
 geometry_msgs__msg__Twist cmd_resetencoder_msg;
-
-void getEncoderWheelsTick() {
-    debug_encoder_wheels_msg.data.data[0] = encLF.read() - offsetLF;
-    debug_encoder_wheels_msg.data.data[1] = encLB.read() - offsetLB;
-    debug_encoder_wheels_msg.data.data[2] = encRF.read() - offsetRF;
-    debug_encoder_wheels_msg.data.data[3] = encRB.read() - offsetRB;
-}
-
-void resetEncoderOffset() {
-    offsetLF = encLF.read(); offsetLB = encLB.read();
-    offsetRF = encRF.read(); offsetRB = encRB.read();
-}
 
 // ============================================================================
 //                          CONTROL LOGIC & CALLBACKS
 // ============================================================================
+
+// 🌟 Callback สำหรับสั่งรีเซ็ตค่า Encoder ทั้ง 2 ระบบ 🌟
 void cmd_reset_encoder_callback(const void *msgin) {
     const geometry_msgs__msg__Twist * msg = (const geometry_msgs__msg__Twist *)msgin;
-    if (msg->linear.x > 0.5) resetEncoderOffset();
+    if (msg->linear.x > 0.5) {
+        offsetLF = encLF.read();
+        offsetRF = encRF.read();
+        offsetLB = encLB.read();
+        offsetRB = encRB.read();
+        
+        last_tick[0] = offsetLF;
+        last_tick[1] = offsetRF;
+        last_tick[2] = offsetLB;
+        last_tick[3] = offsetRB;
+    }
 }
 
-void controlStep(float dt){
-    if (millis() - drive_last_cmd_ms > CMD_TIMEOUT_MS) {
-        tgt_m1_rpm = tgt_m2_rpm = tgt_m3_rpm = tgt_m4_rpm = 0.0f;
-    } else {
-        float v_left  = cmd_vx - cmd_wz * (TRACK_WIDTH * 0.5f);
-        float v_right = cmd_vx + cmd_wz * (TRACK_WIDTH * 0.5f);
-        auto v_to_rpm = [&](float v){ return (v / WHEEL_RADIUS) * 60.0f / (2.0f * PI); };
-        tgt_m1_rpm = tgt_m3_rpm = v_to_rpm(v_left);
-        tgt_m2_rpm = tgt_m4_rpm = v_to_rpm(v_right);
+// 1. รับค่าจาก PC
+void pwm_cb(const void *msgin) {
+    const auto *m = (const std_msgs__msg__Int32MultiArray*)msgin;
+    if (m->data.size >= 4) {
+        target_pwm[0] = m->data.data[0]; 
+        target_pwm[1] = m->data.data[1]; 
+        target_pwm[2] = m->data.data[2]; 
+        target_pwm[3] = m->data.data[3]; 
+        last_pwm_ms = millis();
+    }
+}
+
+// 2. สั่งมอเตอร์
+void applyMotorPWM() {
+    if (millis() - last_pwm_ms > CMD_TIMEOUT_MS) {
+        target_pwm[0] = target_pwm[1] = target_pwm[2] = target_pwm[3] = 0;
     }
 
-    auto slew = [&](float cur, float tgt) {
-        float max_step = SLEW_RPM_PER_SEC * dt;
-        float diff = constrain(tgt, -MAX_RPM, MAX_RPM) - cur;
-        return cur + constrain(diff, -max_step, max_step);
+    auto setMotor = [](int dirPin, int pwmCh, int32_t pwm) {
+        digitalWrite(dirPin, (pwm >= 0) ? HIGH : LOW);
+        ledcWrite(pwmCh, (uint8_t)constrain(abs(pwm), 0, 255));
     };
 
-    m1_rpm = slew(m1_rpm, tgt_m1_rpm); m2_rpm = slew(m2_rpm, tgt_m2_rpm);
-    m3_rpm = slew(m3_rpm, tgt_m3_rpm); m4_rpm = slew(m4_rpm, tgt_m4_rpm);
+    setMotor(L_DIR1, PWM_CH_M1, target_pwm[0]); 
+    setMotor(R_DIR1, PWM_CH_M2, target_pwm[1]); 
+    setMotor(L_DIR2, PWM_CH_M3, target_pwm[2]); 
+    setMotor(R_DIR2, PWM_CH_M4, target_pwm[3]); 
+}
 
-    auto setMotor = [](int dirPin, int pwmCh, float rpm) {
-        digitalWrite(dirPin, (rpm >= 0) ? HIGH : LOW);
-        ledcWrite(pwmCh, (uint8_t)((fabs(rpm)/MAX_RPM) * 255.0f));
-    };
-    setMotor(L_DIR1, PWM_CH_M1, m1_rpm); setMotor(R_DIR1, PWM_CH_M2, m2_rpm);
-    setMotor(L_DIR2, PWM_CH_M3, m3_rpm); setMotor(R_DIR2, PWM_CH_M4, m4_rpm);
+// 3. อ่าน Encoder แปลงเป็น m/s (สำหรับ PID)
+void getEncoderWheelsVelocity(float dt) {
+    long curLF = encLF.read();
+    long curRF = encRF.read();
+    long curLB = encLB.read();
+    long curRB = encRB.read();
+
+    if (dt > 0.0f) {
+        float dist_per_tick = (PI * WHEEL_DIAMETER) / COUNTS_PER_REV;
+        
+        auto calcV = [&](long cur, long &last) {
+            float v = ((float)(cur - last) * dist_per_tick) / dt;
+            last = cur; 
+            return v;
+        };
+
+        debug_encoder_wheels_msg.data.data[0] = calcV(curLF, last_tick[0]);
+        debug_encoder_wheels_msg.data.data[1] = calcV(curRF, last_tick[1]); 
+        debug_encoder_wheels_msg.data.data[2] = calcV(curLB, last_tick[2]);
+        debug_encoder_wheels_msg.data.data[3] = calcV(curRB, last_tick[3]);
+    }
+}
+
+// 4. อ่าน Ticks รวมหักลบ Offset (สำหรับ Odometry)
+void getEncoderWheelsSum() {
+    msg_encoder_sum.data.data[0] = encLF.read() - offsetLF;
+    msg_encoder_sum.data.data[1] = encRF.read() - offsetRF;
+    msg_encoder_sum.data.data[2] = encLB.read() - offsetLB;
+    msg_encoder_sum.data.data[3] = encRB.read() - offsetRB;
 }
 
 void controlTimerCb(rcl_timer_t* timer, int64_t last_call_time) {
@@ -228,17 +265,13 @@ void controlTimerCb(rcl_timer_t* timer, int64_t last_call_time) {
     float dt = (millis() - last_ms) / 1000.0f;
     last_ms = millis();
 
-    controlStep(dt);
-    getEncoderWheelsTick();
+    applyMotorPWM();
 
-    debug_motor_msg.data.data[0] = m1_rpm; debug_motor_msg.data.data[1] = m2_rpm;
-    RCSOFTCHECK(rcl_publish(&debug_motor_pub, &debug_motor_msg, NULL));
+    getEncoderWheelsVelocity(dt);
     RCSOFTCHECK(rcl_publish(&debug_encoder_wheels_publisher, &debug_encoder_wheels_msg, NULL));
 
-    // Update Stepper FB & Cam FB
-    stp_fb_msg.data = (int16_t)((stp_current_steps % STEPS_PER_REV) * 360 / STEPS_PER_REV);
-    if(stp_fb_msg.data < 0) stp_fb_msg.data += 360;
-    RCSOFTCHECK(rcl_publish(&stp_pub_fb, &stp_fb_msg, NULL));
+    getEncoderWheelsSum();
+    RCSOFTCHECK(rcl_publish(&pub_encoder_sum, &msg_encoder_sum, NULL));
 
     uint32_t now = millis();
     if((now - cam_last_hb_ms) >= 300){
@@ -247,13 +280,7 @@ void controlTimerCb(rcl_timer_t* timer, int64_t last_call_time) {
     }
 }
 
-void twistCb(const void *msgin) {
-    const auto *m = (const geometry_msgs__msg__Twist*)msgin;
-    cmd_vx = (fabs(m->linear.x) > DEADBAND) ? m->linear.x : 0;
-    cmd_wz = (fabs(m->angular.z) > DEADBAND) ? m->angular.z : 0;
-    drive_last_cmd_ms = millis();
-}
-
+// Stepper Timer ISR
 void IRAM_ATTR stp_onTimer(){
     if (STP_RUN_DIR == 0 || stp_steps_remaining <= 0) return;
     static bool high = false;
@@ -275,7 +302,7 @@ void stp_cmd_cb(const void* msgin){
     if (delta < -(STEPS_PER_REV/2)) delta += STEPS_PER_REV;
     if(delta == 0) return;
     digitalWrite(PIN_DIR, (delta > 0) ? LOW : HIGH);
-    digitalWrite(PIN_ENA, LOW); 
+    digitalWrite(PIN_ENA, LOW);
     portENTER_CRITICAL(&stp_spinlock);
     STP_RUN_DIR = (delta > 0) ? 1 : -1;
     stp_steps_remaining = abs(delta);
@@ -293,33 +320,55 @@ bool createEntities(){
     RCCHECK(rclc_support_init_with_options(&support, 0, NULL, &init_options, &allocator));
     RCCHECK(rclc_node_init_default(&node, "esp32_robot_node", "", &support));
 
-    debug_motor_msg.data.capacity = 4; debug_motor_msg.data.size = 4;
-    debug_motor_msg.data.data = (float*)malloc(4*sizeof(float));
-    debug_encoder_wheels_msg.data.capacity = 4; debug_encoder_wheels_msg.data.size = 4;
-    debug_encoder_wheels_msg.data.data = (float*)malloc(4*sizeof(float));
+    pwm_msg.data.capacity = 4;
+    pwm_msg.data.size = 0; 
+    pwm_msg.data.data = (int32_t*)malloc(pwm_msg.data.capacity * sizeof(int32_t));
+    
+    debug_encoder_wheels_msg.data.capacity = 4; 
+    debug_encoder_wheels_msg.data.size = 4;
+    debug_encoder_wheels_msg.data.data = (float*)malloc(debug_encoder_wheels_msg.data.capacity * sizeof(float));
 
-    RCCHECK(rclc_publisher_init_best_effort(&debug_motor_pub, &node, ROSIDL_GET_MSG_TYPE_SUPPORT(std_msgs, msg, Float32MultiArray), "/motor_debug/duty"));
-    RCCHECK(rclc_publisher_init_best_effort(&stp_pub_fb, &node, ROSIDL_GET_MSG_TYPE_SUPPORT(std_msgs, msg, Int16), "/tao/cmd_step_load/fb"));
-    RCCHECK(rclc_publisher_init_default(&debug_encoder_wheels_publisher, &node, ROSIDL_GET_MSG_TYPE_SUPPORT(std_msgs, msg, Float32MultiArray), "teelek/debug/encoder_wheels"));
-    RCCHECK(rclc_publisher_init_best_effort(&pub_fb_cam, &node, ROSIDL_GET_MSG_TYPE_SUPPORT(std_msgs, msg, Int16), "/tao/cmd_servo_cam/rpm"));
+    msg_encoder_sum.data.capacity = 4;
+    msg_encoder_sum.data.size = 4;
+    msg_encoder_sum.data.data = (int32_t*)malloc(msg_encoder_sum.data.capacity * sizeof(int32_t));
 
-    RCCHECK(rclc_subscription_init_default(&cmd_sub, &node, ROSIDL_GET_MSG_TYPE_SUPPORT(geometry_msgs, msg, Twist), "/tao/cmd_vel"));
-    RCCHECK(rclc_subscription_init_default(&stp_sub_cmd, &node, ROSIDL_GET_MSG_TYPE_SUPPORT(std_msgs, msg, Int16), "/tao/cmd_step_load"));
-    RCCHECK(rclc_subscription_init_default(&cmd_resetencoder_subscriber, &node, ROSIDL_GET_MSG_TYPE_SUPPORT(geometry_msgs, msg, Twist), "/teelek/cmd_resetencoder"));
-    RCCHECK(rclc_subscription_init_default(&sub_cmd_cam, &node, ROSIDL_GET_MSG_TYPE_SUPPORT(std_msgs, msg, Int16), "/tao/cmd_servo_cam"));
+    // --- Publishers ---
+    RCCHECK(rclc_publisher_init_best_effort(&stp_pub_fb, &node,
+        ROSIDL_GET_MSG_TYPE_SUPPORT(std_msgs, msg, Int16), "/tao/cmd_step_load/fb"));
+    RCCHECK(rclc_publisher_init_default(&debug_encoder_wheels_publisher, &node,
+        ROSIDL_GET_MSG_TYPE_SUPPORT(std_msgs, msg, Float32MultiArray), "/tao/encoder_feedback"));
+    RCCHECK(rclc_publisher_init_default(&pub_encoder_sum, &node,
+        ROSIDL_GET_MSG_TYPE_SUPPORT(std_msgs, msg, Int32MultiArray), "/tao/encoder_sum"));
+    RCCHECK(rclc_publisher_init_best_effort(&pub_fb_cam, &node,
+        ROSIDL_GET_MSG_TYPE_SUPPORT(std_msgs, msg, Int16), "/tao/cmd_servo_cam/rpm"));
 
+    // --- Subscribers ---
+    RCCHECK(rclc_subscription_init_default(&pwm_sub, &node,
+        ROSIDL_GET_MSG_TYPE_SUPPORT(std_msgs, msg, Int32MultiArray), "/tao/motor_pwm"));
+    RCCHECK(rclc_subscription_init_default(&stp_sub_cmd, &node,
+        ROSIDL_GET_MSG_TYPE_SUPPORT(std_msgs, msg, Int16), "/tao/cmd_step_load"));
+    
+    // 🌟 Topic สำหรับคำสั่ง Reset 🌟
+    RCCHECK(rclc_subscription_init_default(&cmd_resetencoder_subscriber, &node,
+        ROSIDL_GET_MSG_TYPE_SUPPORT(geometry_msgs, msg, Twist), "/tao/reset_encoder"));
+        
+    RCCHECK(rclc_subscription_init_default(&sub_cmd_cam, &node,
+        ROSIDL_GET_MSG_TYPE_SUPPORT(std_msgs, msg, Int16), "/tao/cmd_servo_cam"));
+
+    // --- Timer ---
     RCCHECK(rclc_timer_init_default(&control_timer, &support, RCL_MS_TO_NS(20), controlTimerCb));
 
+    // --- Executor ---
     RCCHECK(rclc_executor_init(&executor, &support.context, 5, &allocator));
-    RCCHECK(rclc_executor_add_subscription(&executor, &cmd_sub, &cmd_msg, &twistCb, ON_NEW_DATA));
-    RCCHECK(rclc_executor_add_subscription(&executor, &stp_sub_cmd, &stp_cmd_msg, &stp_cmd_cb, ON_NEW_DATA));
-    RCCHECK(rclc_executor_add_subscription(&executor, &cmd_resetencoder_subscriber, &cmd_resetencoder_msg, &cmd_reset_encoder_callback, ON_NEW_DATA));
-    RCCHECK(rclc_executor_add_subscription(&executor, &sub_cmd_cam, &cmd_msg_cam, &sub_cb_cam, ON_NEW_DATA)); 
+    RCCHECK(rclc_executor_add_subscription(&executor, &pwm_sub,                    &pwm_msg,              &pwm_cb,                     ON_NEW_DATA));
+    RCCHECK(rclc_executor_add_subscription(&executor, &stp_sub_cmd,                &stp_cmd_msg,          &stp_cmd_cb,                 ON_NEW_DATA));
+    RCCHECK(rclc_executor_add_subscription(&executor, &cmd_resetencoder_subscriber,&cmd_resetencoder_msg, &cmd_reset_encoder_callback,   ON_NEW_DATA));
+    RCCHECK(rclc_executor_add_subscription(&executor, &sub_cmd_cam,                &cmd_msg_cam,          &sub_cb_cam,                 ON_NEW_DATA)); 
     RCCHECK(rclc_executor_add_timer(&executor, &control_timer));
 
-    // ส่งค่า 0 ออกไปครั้งแรกหลังต่อสำเร็จ
-    stp_fb_msg.data = 0;
-    RCSOFTCHECK(rcl_publish(&stp_pub_fb, &stp_fb_msg, NULL));
+    cam_last_angle = 0;
+    cam_servo.writeMicroseconds(cam_angle_to_us(0));
+    cam_publish_fb(0);
 
     return true;
 }
@@ -341,12 +390,8 @@ void setup(){
     ledcSetup(PWM_CH_M3, PWM_FREQ, PWM_RESOLUTION); ledcAttachPin(L_PWM2, PWM_CH_M3);
     ledcSetup(PWM_CH_M4, PWM_FREQ, PWM_RESOLUTION); ledcAttachPin(R_PWM2, PWM_CH_M4);
 
-    // --- Stepper Setup: Start at 0 degree ---
     pinMode(PIN_PUL, OUTPUT); pinMode(PIN_DIR, OUTPUT); pinMode(PIN_ENA, OUTPUT);
-    digitalWrite(PIN_ENA, LOW); // Enable motor (Locked at 0 degree)
-    stp_current_steps = 0;      // Set initial software position to 0
-    STP_RUN_DIR = 0;
-    stp_steps_remaining = 0;
+    digitalWrite(PIN_ENA, HIGH);
     
     stp_tmr = timerBegin(3, 80, true); 
     timerAttachInterrupt(stp_tmr, &stp_onTimer, true);

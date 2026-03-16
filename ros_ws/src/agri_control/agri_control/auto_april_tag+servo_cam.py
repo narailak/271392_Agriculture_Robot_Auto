@@ -29,7 +29,7 @@ class FarmingAprilTagNode(Node):
         self.servo_pub = self.create_publisher(Int16, '/tao/cmd_servo_cam', 10) 
 
         # ==========================================
-        # 2. AprilTag Setup (อัปเดตพารามิเตอร์กล้องใหม่)
+        # 2. AprilTag Setup
         # ==========================================
         self.detector = Detector(
             families="tagStandard52h13",
@@ -39,7 +39,6 @@ class FarmingAprilTagNode(Node):
             refine_edges=True
         )
 
-        # อัปเดตค่าที่ได้จากการ Calibrate
         self.camera_params = [942.01, 945.76, 445.51, 233.71] 
         self.camera_matrix = np.array([
             [942.00959306, 0.0, 445.50898168],
@@ -50,25 +49,31 @@ class FarmingAprilTagNode(Node):
             [-0.41678417, 0.26653241, 0.00208138, -0.00701684, -0.14829814]
         ])
 
-        self.tag_size = 0.053
+        self.tag_size = 0.036
 
         # ==========================================
-        # 3. Kinematics & DISTANCE CALIBRATION
+        # 3. Kinematics, OFFSET & STATE MACHINE
         # ==========================================
         self.camera_to_front_dist = 0.20  
-        self.front_to_bed_stop_dist = 0.30 
-        
+        self.front_to_bed_stop_dist = 10.0 
         self.target_distance = self.camera_to_front_dist + self.front_to_bed_stop_dist
 
-        # ---------------------------------------------------------
-        # ตั้งค่าการเยื้องศูนย์ (X-Offset)
-        # ---------------------------------------------------------
-        self.bed_offset_x = 0.075  
+        self.bed_offset_x = 0.042  
 
         self.kp_linear = 0.6   
-        self.kp_angular = 2.0  
+        self.kp_angular_meters = 5.0  
+        
         self.max_linear_speed = 0.8 
-        self.max_angular_speed = 4.5  
+        self.max_angular_speed = 20.0  
+        self.min_angular_speed = 10.0  
+
+        # ---------------------------------------------------------
+        # ตัวแปรสำหรับ State Machine (Stop-and-Go Logic)
+        # ---------------------------------------------------------
+        self.robot_state = 'ALIGNING' 
+        self.move_frame_count = 0      
+        self.max_move_frames = 100      
+        self.drift_tolerance = 0.06    
 
         # ==========================================
         # 4. Servo Control Parameters
@@ -82,7 +87,7 @@ class FarmingAprilTagNode(Node):
         self.lost_frames = 0        
 
         self.publish_servo(self.servo_angle)
-        self.get_logger().info("Farming AprilTag Node Started (With Updated Camera Params)...")
+        self.get_logger().info("Farming AprilTag Node Started (With Visual Target Line)...")
 
     def decode_tag(self, tag_id):
         tag_str = str(tag_id).zfill(5)
@@ -130,14 +135,11 @@ class FarmingAprilTagNode(Node):
         if best_tag is not None:
             self.lost_frames = 0  
             tag = best_tag
-            tag_id = tag.tag_id
-            AB, C_gap, DE = self.decode_tag(tag_id)
 
             cx, cy = int(tag.center[0]), int(tag.center[1])
-            
             error_y = cy - center_y
 
-            # --- จัดการ Servo ---
+            # --- จัดการ Servo (แกน Y) ---
             if self.frame_counter % 5 == 0:
                 if error_y < -40: 
                     self.servo_angle -= self.track_step  
@@ -147,68 +149,101 @@ class FarmingAprilTagNode(Node):
                 self.servo_angle = max(50, min(160, self.servo_angle))
                 self.publish_servo(self.servo_angle)
 
+            # วาดกรอบของ AprilTag (สีเขียว)
             corners = tag.corners.astype(int)
             for i in range(4):
                 cv2.line(frame_undistorted, tuple(corners[i]), tuple(corners[(i + 1) % 4]), (0, 255, 0), 3)
             
+            # วาดเส้นกึ่งกลางกล้องแท้ๆ (แกน Y แนวนอนสีเหลือง, แกน X แนวตั้งสีเหลือง)
             cv2.line(frame_undistorted, (0, center_y), (w, center_y), (0, 255, 255), 1)
+            cv2.line(frame_undistorted, (center_x, 0), (center_x, h), (0, 255, 255), 1)
 
             if tag.pose_t is not None:
                 tx = tag.pose_t[0][0] 
                 tz = tag.pose_t[2][0] 
 
-                current_front_to_tag = tz - self.camera_to_front_dist
+                # =========================================================
+                # 🎯 วาดเส้น Target Path (สีน้ำเงิน) บนจอภาพ 🎯
+                # แปลงพิกัด 0.042m ในโลก 3D กลับมาเป็นพิกเซล 2D โดยใช้ Camera Matrix
+                # =========================================================
+                fx = self.camera_matrix[0, 0]
+                cx_cam = self.camera_matrix[0, 2]
                 
-                if self.frame_counter % 10 == 0:
-                    self.get_logger().info(
-                        f"Camera Dist (tz): {tz:.3f} m | "
-                        f"Front Bumper to Tag: {current_front_to_tag:.3f} m | "
-                        f"Lateral Offset (tx): {tx:.3f} m"
-                    )
+                # คำนวณหาตำแหน่งพิกเซล X ที่ Tag ควรจะมาอยู่
+                target_pixel_x = int((fx * (self.bed_offset_x / tz)) + cx_cam)
+                
+                # ตรวจสอบให้อยู่ในขอบเขตภาพ
+                target_pixel_x = max(0, min(w, target_pixel_x))
+                
+                # วาดเส้นแนวตั้งสีน้ำเงิน (Target Line)
+                cv2.line(frame_undistorted, (target_pixel_x, 0), (target_pixel_x, h), (255, 0, 0), 2)
+                cv2.putText(frame_undistorted, "TARGET PATH", (target_pixel_x + 10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 0, 0), 2)
+                
+                # วาดวงกลมสีแดงที่จุดกึ่งกลาง Tag ปัจจุบัน เพื่อให้ดูง่ายขึ้น
+                cv2.circle(frame_undistorted, (cx, cy), 5, (0, 0, 255), -1)
 
-                calib_text = f"Front to Tag: {current_front_to_tag:.3f} m"
-                cv2.putText(frame_undistorted, calib_text, (20, 110), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 165, 255), 2)
-
-                # =========================================================
-                # เงื่อนไขการเข้าเป้าหมาย
-                # =========================================================
-                is_y_centered = abs(error_y) < 50
+                current_front_to_tag = tz - self.camera_to_front_dist
+                x_error = tx - self.bed_offset_x
+                
+                is_x_aligned = abs(x_error) < 0.015
+                is_y_centered_for_move = abs(error_y) < 50
                 distance_error = tz - self.target_distance
                 is_distance_reached = abs(distance_error) < 0.05
-                
-                x_error = tx - self.bed_offset_x
-                is_x_aligned = abs(x_error) < 0.02
 
-                # --- ควบคุมการเลี้ยว (แกน X) ---
-                angular_z = -self.kp_angular * x_error
-                angular_z = max(-self.max_angular_speed, min(self.max_angular_speed, angular_z))
-                if is_x_aligned:
-                    angular_z = 0.0
-                cmd.angular.z = float(angular_z)
+                if is_distance_reached:
+                    self.robot_state = 'FINISH'
 
-                # --- ควบคุมการเดินหน้าและเช็คสถานะ FINISH ---
-                if is_y_centered:
+                # =========================================================
+                # LOGIC: STATE MACHINE (Stop-and-Go)
+                # =========================================================
+                if self.robot_state == 'ALIGNING':
+                    cmd.linear.x = 0.0
+                    angular_z = -self.kp_angular_meters * x_error
+                    
+                    if not is_x_aligned:
+                        if angular_z > 0:
+                            angular_z = max(self.min_angular_speed, angular_z)
+                        elif angular_z < 0:
+                            angular_z = min(-self.min_angular_speed, angular_z)
+                    
+                    angular_z = max(-self.max_angular_speed, min(self.max_angular_speed, angular_z))
+                    cmd.angular.z = float(angular_z)
+
+                    if is_x_aligned and is_y_centered_for_move:
+                        self.robot_state = 'MOVING'
+                        self.move_frame_count = 0  
+
+                    cv2.putText(frame_undistorted, "STATE: ALIGNING (STOPPED)", (cx - 150, cy - 40), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 165, 255), 2)
+
+                elif self.robot_state == 'MOVING':
+                    cmd.angular.z = 0.0
+
                     linear_x = self.kp_linear * distance_error
-                    linear_x = max(-self.max_linear_speed, min(self.max_linear_speed, linear_x))
+                    cmd.linear.x = float(max(-self.max_linear_speed, min(self.max_linear_speed, linear_x)))
                     
-                    if is_distance_reached:
-                        linear_x = 0.0
-                    cmd.linear.x = float(linear_x)
-                    
-                    if is_distance_reached and is_x_aligned:
-                        cv2.putText(frame_undistorted, "FINISH - TARGET REACHED!", (cx - 150, cy - 60), cv2.FONT_HERSHEY_SIMPLEX, 0.9, (0, 255, 0), 3)
-                    else:
-                        cv2.putText(frame_undistorted, "Y-CENTERED - MOVING", (cx - 100, cy - 40), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
-                else:
-                    cmd.linear.x = 0.0 
-                    cv2.putText(frame_undistorted, "ADJUSTING CAMERA...", (cx - 100, cy - 40), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 165, 255), 2)
+                    self.move_frame_count += 1
 
-                cv2.putText(frame_undistorted, f"Servo Angle: {self.servo_angle} deg", (20, h - 25), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 255), 2)
+                    if self.move_frame_count >= self.max_move_frames or abs(x_error) > self.drift_tolerance:
+                        self.robot_state = 'ALIGNING'
+
+                    cv2.putText(frame_undistorted, "STATE: MOVING FORWARD", (cx - 150, cy - 40), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
+
+                elif self.robot_state == 'FINISH':
+                    cmd.linear.x = 0.0
+                    cmd.angular.z = 0.0
+                    cv2.putText(frame_undistorted, "FINISH - ALIGNED & REACHED!", (cx - 150, cy - 40), cv2.FONT_HERSHEY_SIMPLEX, 0.9, (0, 255, 0), 3)
+
+                # แสดงค่า Debug บนจอ
+                cv2.putText(frame_undistorted, f"State: {self.robot_state}", (20, 50), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 255), 2)
+                cv2.putText(frame_undistorted, f"X Error: {x_error:.3f} m", (20, 80), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 0), 2)
+                cv2.putText(frame_undistorted, f"Front to Tag: {current_front_to_tag:.3f} m", (20, 110), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 165, 255), 2)
+                cv2.putText(frame_undistorted, f"Cmd Linear: {cmd.linear.x:.2f} | Angular: {cmd.angular.z:.2f}", (20, 140), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 0, 255), 2)
 
         else:
             self.lost_frames += 1
             cmd.linear.x = 0.0
             cmd.angular.z = 0.0
+            self.robot_state = 'ALIGNING' 
             
             if self.lost_frames < 15:
                 cv2.putText(frame_undistorted, "WAITING FOR BLUR TO CLEAR...", (20, 40), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 165, 255), 2)
@@ -227,7 +262,7 @@ class FarmingAprilTagNode(Node):
 
                 cv2.putText(frame_undistorted, "SEARCHING TAG...", (20, 40), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 0, 255), 2)
             
-            cv2.putText(frame_undistorted, f"Servo Angle: {self.servo_angle} deg", (20, h - 25), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
+        cv2.putText(frame_undistorted, f"Servo Angle: {self.servo_angle} deg", (20, h - 25), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 255), 2)
 
         self.cmd_pub.publish(cmd)
 

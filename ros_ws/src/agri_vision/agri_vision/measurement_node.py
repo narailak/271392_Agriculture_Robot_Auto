@@ -26,7 +26,12 @@ class MeasurementNode(Node):
 
         self.F_AVG = (942.01 + 945.76) / 2 
         self.CAMERA_HEIGHT = 43.4           
-        self.CENTER_THRESHOLD = 60          
+        
+        # ==========================================
+        # 🎯 ตั้งค่าขอบเขตโซนสแกน (สี่เหลี่ยมผืนผ้า)
+        # ==========================================
+        self.THRESHOLD_X = 200  # ความกว้างของโซน (ซ้าย-ขวา)
+        self.THRESHOLD_Y = 60   # ความสูงของโซน (บน-ล่าง)
 
         # ==========================================
         # 🌟 ระบบจัดการไฟล์และการนับจำนวนต้น
@@ -123,9 +128,13 @@ class MeasurementNode(Node):
         frame = cv2.undistort(frame, self.mtx, self.dist, None, new_camera_mtx)
 
         annotated = frame.copy()
+        
+        # วาดจุดกึ่งกลางและกรอบสี่เหลี่ยมผืนผ้าสำหรับโซนสแกน
         cv2.circle(annotated, (screen_cx, screen_cy), 5, (255, 0, 0), -1)
-        cv2.rectangle(annotated, (screen_cx-self.CENTER_THRESHOLD, screen_cy-self.CENTER_THRESHOLD), 
-                      (screen_cx+self.CENTER_THRESHOLD, screen_cy+self.CENTER_THRESHOLD), (255, 255, 255), 1)
+        cv2.rectangle(annotated, 
+                      (screen_cx - self.THRESHOLD_X, screen_cy - self.THRESHOLD_Y), 
+                      (screen_cx + self.THRESHOLD_X, screen_cy + self.THRESHOLD_Y), 
+                      (255, 255, 255), 1)
 
         best_dist = float('inf')
         current_best_cabbage = None
@@ -156,7 +165,11 @@ class MeasurementNode(Node):
                         cv2.circle(annotated, (cx, cy), 5, color, -1)
                         cv2.putText(annotated, f"ID:{track_id} {diameter_cm:.2f}cm", (x1, y1 - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.6, color, 2)
 
-                        if dist_to_center < self.CENTER_THRESHOLD and track_id not in self.logged_ids:
+                        # เช็คว่ากะหล่ำอยู่ในโซนสี่เหลี่ยมผืนผ้าหรือไม่
+                        in_zone_x = abs(cx - screen_cx) <= self.THRESHOLD_X
+                        in_zone_y = abs(cy - screen_cy) <= self.THRESHOLD_Y
+
+                        if in_zone_x and in_zone_y and track_id not in self.logged_ids:
                             if dist_to_center < best_dist:
                                 best_dist = dist_to_center
                                 current_best_cabbage = {'id': track_id, 'size': diameter_cm}

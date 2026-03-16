@@ -36,7 +36,6 @@ class AgriStateMachineNode(Node):
         self.STATE_WAIT_APRILTAG = 4
         self.STATE_3_READ_LOG = 5
         self.STATE_4_MOVING = 6         
-        # 🌟 ลบ STATE_5_SAVE_PID ทิ้ง เพราะไม่เซฟยิบย่อยแล้ว
         self.STATE_6_CALL_PLANTER = 9   
         self.STATE_WAIT_PLANTER = 10    
         self.STATE_POST_PLANT_DELAY = 11
@@ -68,6 +67,9 @@ class AgriStateMachineNode(Node):
         self.last_cabbage_dist = 0.0
         
         self.start_reverse_dist = 0.0
+
+        # 🌟 ตัวแปรระยะชดเชยของหัวเจาะที่อยู่ในตัวหุ่น
+        self.drill_offset_cm = 13.5 
         
         self.timer = self.create_timer(0.1, self.state_machine_loop)
         self.input_thread = threading.Thread(target=self.keyboard_listener, daemon=True)
@@ -133,7 +135,9 @@ class AgriStateMachineNode(Node):
                     lines = list(csv.reader(f))
                     if len(lines) > 1:
                         self.plant_dist_cm = float(lines[-1][2])
-                        self.target_distance = self.current_distance + self.plant_dist_cm
+                        # 🌟 บวกระยะ offset 13.5 cm สำหรับต้นแรก
+                        self.target_distance = self.current_distance + self.plant_dist_cm + self.drill_offset_cm
+                        self.get_logger().info(f"เริ่มปลูกต้นแรก ระยะเป้าหมาย: {self.target_distance:.2f} (รวม offset {self.drill_offset_cm} cm)")
                         self.current_state = self.STATE_4_MOVING
                     else: 
                         self.current_state = self.STATE_WAIT_FOR_START
@@ -152,7 +156,6 @@ class AgriStateMachineNode(Node):
             else:
                 cmd_msg.linear.x = 0.0
                 self.pub_cmd_vel.publish(cmd_msg)
-                # 🌟 เดินถึงระยะปลูกแล้ว ข้ามการเซฟ PID ไปสั่งแขนกลปลูกเลย
                 self.current_state = self.STATE_6_CALL_PLANTER
 
         elif self.current_state == self.STATE_6_CALL_PLANTER:
@@ -167,7 +170,9 @@ class AgriStateMachineNode(Node):
                 self.planted_count += 1 
 
                 if self.planted_count < 2:
+                    # 🌟 สำหรับต้นที่สอง เดินแค่ระยะปลูกปกติ (ไม่บวก offset แล้ว)
                     self.target_distance = self.current_distance + self.plant_dist_cm
+                    self.get_logger().info(f"ปลูกต้นที่ 2 ระยะเป้าหมายถัดไป: {self.target_distance:.2f}")
                     self.current_state = self.STATE_4_MOVING
                 else:
                     self.delay_start_time = self.get_clock().now()
@@ -218,7 +223,6 @@ class AgriStateMachineNode(Node):
                 cmd_msg.linear.x = 0.4
                 self.pub_cmd_vel.publish(cmd_msg)
             else:
-                # 🌟 เดินถึงสุดแปลงแล้ว เบรกและไปสั่งเซฟ PID!
                 cmd_msg.linear.x = 0.0
                 self.pub_cmd_vel.publish(cmd_msg)
                 self.get_logger().info(f"🚫 ไม่เจอกะหล่ำ ถือว่าจบแปลง สั่งเบรกและบันทึกข้อมูล PID รวบยอด!")
@@ -246,9 +250,6 @@ class AgriStateMachineNode(Node):
                 self.last_cabbage_dist = self.current_distance
                 self.current_state = self.STATE_MOVE_UNTIL_CABBAGE
 
-        # ==========================================
-        # 🌟 STATE สั่งเซฟ PID รอบเดียวตอนจบแปลง
-        # ==========================================
         elif self.current_state == self.STATE_SAVE_PID_FINAL:
             if not self.pid_save_client.service_is_ready(): 
                 self.get_logger().warning("รอ Service PID...", throttle_duration_sec=2.0)

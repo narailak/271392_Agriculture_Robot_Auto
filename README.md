@@ -31,3 +31,23 @@ nmcli device status
 
 # reset endcodeer
 ros2 topic pub --once /tao/cmd_resetencoder geometry_msgs/msg/Twist "{linear: {x: 1.0}}"
+
+
+############################### RUN #################################
+# PI 5
+ros2 launch agri_bringup pi.launch.py 
+
+# COM
+cd ~/CMU/P.3/P.3-T.2/271392_Agriculture_Robot_Auto
+
+source venv/bin/activate
+
+ros2 run agri_vision measurement_node 
+
+
+---terminal 2---
+
+ros2 launch agri_bringup sever.launch.py 
+
+---terminal 3 ----
+ros2 run agri_state_machine state_machine_node 
